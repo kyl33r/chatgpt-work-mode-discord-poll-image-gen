@@ -2,7 +2,7 @@
 
 Date: 2026-08-24
 
-Status: Implemented; awaiting supervised live Discord round.
+Status: Superseded by `2026-08-24-chat-triggered-five-message-round-design.md`.
 
 ## Objective
 
