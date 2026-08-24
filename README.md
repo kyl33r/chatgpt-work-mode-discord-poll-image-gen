@@ -51,5 +51,6 @@ See [Discord setup](docs/discord-setup.md) before running the supervised browser
 - [First POC design](docs/superpowers/specs/2026-08-24-discord-work-skill-poc-design.md)
 - [ADR 0001: local JSON before SQLite](docs/adr/0001-local-json-state-before-sqlite.md)
 - [ADR 0002: browser-mediated Discord access](docs/adr/0002-browser-mediated-discord-access-for-poc.md)
+- [ADR 0003: canonical skills with discovery symlinks](docs/adr/0003-canonical-skills-with-discovery-symlinks.md)
 
 The existing bot-based experiment remains separate in `kyl33r/discord-image-feedback-relay`.

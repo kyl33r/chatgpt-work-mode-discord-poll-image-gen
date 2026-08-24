@@ -213,6 +213,8 @@ No restart can count a message twice, change the frozen first set, create a seco
 
 The root `AGENTS.md` repeats these secrecy boundaries for every repository agent. It declares `skills/` as the sole canonical project-skill source and `.agents/skills/` as symlink-only discovery metadata. No skill content is duplicated beneath `.agents/skills/`.
 
+ADR 0003 records why `AGENTS.md` cannot replace the discovery symlinks and why duplicated skill content is prohibited.
+
 ## Skill changes
 
 ### `submit-base-image`
