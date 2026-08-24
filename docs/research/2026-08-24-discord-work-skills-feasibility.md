@@ -4,6 +4,8 @@ Date: 2026-08-24
 
 Status: Research-backed proposal; product protocol still requires owner approval.
 
+> Historical note: this document records the initial feasibility exploration, including a server-thread workflow. The approved POC design supersedes that sketch and uses a bounded segment in one configured channel so the same flow works in a server channel, group DM, or direct message.
+
 ## Executive conclusion
 
 The Work-native approach is viable as a proof of concept:

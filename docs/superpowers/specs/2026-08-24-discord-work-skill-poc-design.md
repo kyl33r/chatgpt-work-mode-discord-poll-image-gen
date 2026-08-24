@@ -1,236 +1,375 @@
-# Discord Poll to ChatGPT Work Image — First POC Design
+# Discord Base-Image Feedback Poll POC
 
 Date: 2026-08-24
 
-Status: Approved direction; awaiting written-spec review before implementation.
+Status: Approved design; awaiting written-spec review before implementation.
 
 ## Objective
 
-Prove that ChatGPT Work can operate a small Discord image-request workflow without a Discord bot, Discord webhook, OpenAI API key, or a second Playwright-controlled ChatGPT browser.
+Prove that ChatGPT Work can coordinate a Discord image-feedback round through reusable project skills and the signed-in Discord web UI.
 
-For the first POC, a Discord member creates a native poll in one dedicated test channel. After the poll closes, a recurring ChatGPT Work task reads the result through ChatGPT's signed-in browser profile, generates one image using the winning direction, and posts that image back to the request's Discord thread.
+The owner supplies a base image. Participants submit text feedback after seeing that image. ChatGPT Work turns the feedback into a native Discord poll, reads the finalized results, edits the base image with the selected feedback through `$imagegen`, and posts exactly one result into the same Discord channel.
 
-Success means the same scheduled task can run twice without generating or posting the same image twice.
+The POC uses no Discord bot, Discord token, incoming webhook, OpenAI API key, or second Playwright-controlled ChatGPT browser.
 
-## Product decisions
+## Success criteria
 
-- Generation begins only after the initial poll has closed.
-- The winning poll answer selects the image direction.
-- Version one generates exactly one image per request. It does not run the later approval/revision loop.
-- Polls are the user-facing request interface; no slash command or bot is required.
-- ChatGPT Work uses built-in image generation through `$imagegen`, not the OpenAI API.
-- The task checks Discord every five minutes for the POC rather than receiving real-time events.
-- One job may be active at a time. Additional valid polls remain queued.
-- The existing Discord bot and Playwright relay remain untouched until this POC passes its smoke tests.
+The POC succeeds when one supervised round completes through the real Discord web UI and a repeated run performs no duplicate poll creation, image generation, or result posting.
 
-## Request contract
+## Scope
 
-Use one private test channel. The examples call it `#image-requests-poc`; the local allowlisted channel URL is authoritative.
+Version one supports:
 
-A valid request consists of:
+- one allowlisted Discord channel;
+- one active feedback round;
+- one owner-supplied base image;
+- one active text submission per participant;
+- up to ten feedback candidates;
+- one multi-select native Discord poll;
+- the three highest-voted nonzero candidates;
+- one image edit; and
+- one confirmed result post.
 
-1. A brief message beginning with `IMAGE BRIEF:`. The message may include reference-image attachments.
-2. A native Discord poll posted immediately after the brief.
-3. A poll question beginning with `IMAGE DIRECTION:`.
-4. Between two and four direction answers, such as `Editorial photo`, `Flat illustration`, or `3D render`.
-5. A closed poll with one unambiguous winning answer.
+Version one does not support subsequent edit rounds, participant-submitted reference images, concurrent rounds, multiple channels, server-wide crawling, Discord APIs, public deployment, or automatic recovery from ambiguous external actions.
 
-The POC rejects:
+## Repository layout
 
-- open polls;
-- tied polls;
-- polls outside the configured channel;
-- polls missing the required brief or prefixes;
-- polls with more than one candidate brief;
-- requests already recorded in the local ledger; and
-- instructions inside Discord that attempt to change channel allowlists, limits, local paths, skill rules, or security boundaries.
-
-Every member who can post in the dedicated channel may create a request during the POC. Discord channel membership is the authorization boundary.
-
-## User flow
-
-1. A member posts an `IMAGE BRIEF:` message and optional reference image.
-2. The member creates the adjacent `IMAGE DIRECTION:` poll.
-3. Members vote and wait for the poll to close.
-4. The scheduled Work task opens the allowlisted Discord channel URL.
-5. It finds the oldest finalized, valid, unclaimed request.
-6. It copies the stable Discord message links and records a local `discovered` job.
-7. It replies in the request thread with `Claimed <job-id>`.
-8. It builds a deterministic prompt from the brief and winning direction.
-9. It invokes `$imagegen` exactly once.
-10. It records the resulting image path before returning to Discord.
-11. It uploads the recorded image to the exact request thread with the job ID and winning direction.
-12. It verifies that the post is visibly present, then records the job as `completed`.
-13. A later scheduled run skips that request.
-
-## Architecture
-
-The POC uses one new project skill plus existing ChatGPT capabilities:
-
-| Component | Responsibility |
-| --- | --- |
-| `.agents/skills/discord-image-poll-worker/` | Repo-scoped Work workflow and fail-closed browser instructions |
-| ChatGPT browser | Operate the signed-in Discord web UI |
-| `$imagegen` | Generate one image from the normalized prompt |
-| Pure TypeScript planning core | Validate normalized poll observations, choose the next action, build the prompt, and enforce state transitions |
-| Local JSON ledger | Persist job identity and phase across scheduled runs |
-| Existing `src/constants.ts` | Hold every fixed prefix, limit, state path, schedule recommendation, and product message |
-
-The custom skill remains in the repository so it is reviewed and versioned with its deterministic helpers. The scheduled task runs in this repository directory, allowing the skill to use the local planning core and ledger. We do not install an unversioned copy in a separate personal-skills directory for the first POC.
-
-One orchestrator skill is preferable to six independent custom skills for version one. It provides a single invocation boundary and delegates only image generation to the existing `$imagegen` skill. The queue, state, prompt, publish, and recovery responsibilities remain separate modules behind that orchestrator.
-
-## Public seams and TDD boundary
-
-The following public interfaces are the agreed test seams:
-
-### `planNextAction(observation, ledger): PlannedAction`
-
-Accepts a normalized observation of the allowlisted Discord channel plus current persisted state. Returns exactly one of:
-
-- `ignore` with a reason;
-- `claim` with a new job;
-- `generate` with a prompt;
-- `publish` with an exact artifact and thread target;
-- `complete`; or
-- `needs-attention`.
-
-Tests observe only the returned action, not internal helpers.
-
-### `applyJobEvent(ledger, event): Ledger`
-
-Applies one allowed event to persisted state and rejects invalid or duplicate transitions. Tests observe the returned public ledger.
-
-### `buildImagePrompt(request): string`
-
-Returns a deterministic prompt from a valid brief and winning direction. Tests compare against independent, fixed expected strings.
-
-### Skill workflow smoke seam
-
-The end-to-end seam is the visible Discord channel and local ledger: one finalized test poll produces one visible image post and one completed ledger entry. The UI is not mocked for this test.
-
-Implementation follows vertical TDD slices:
-
-1. one failing behavior test;
-2. the minimum implementation to pass;
-3. the next failing behavior test.
-
-The initial slices cover valid discovery, open-poll rejection, tie rejection, stable job identity, duplicate-run suppression, deterministic prompting, legal transitions, recovery after interruption, and publish confirmation.
-
-## State and idempotency
-
-The ledger is stored under a gitignored runtime directory and contains no Discord credentials or browser data.
+The canonical skill source lives under the user-requested top-level `skills/` directory:
 
 ```text
-discovered -> claimed -> generating -> generated -> publishing -> completed
-                    \-> needs-attention
-generating/publishing -> needs-attention
+skills/
+├── submit-base-image/
+│   ├── SKILL.md
+│   └── agents/openai.yaml
+├── get-discord-polls/
+│   ├── SKILL.md
+│   └── agents/openai.yaml
+└── image-gen/
+    ├── SKILL.md
+    └── agents/openai.yaml
 ```
 
-Each job ID is derived from the Discord poll message URL. Each external side effect uses `(job-id, turn=1, operation)` as its idempotency identity.
+Codex discovers repository skills from `.agents/skills/`. That directory contains symlinks to the canonical folders rather than copies:
 
-Important ordering rules:
+```text
+.agents/skills/
+├── submit-base-image -> ../../skills/submit-base-image
+├── get-discord-polls -> ../../skills/get-discord-polls
+└── image-gen -> ../../skills/image-gen
+```
 
-- Persist `claimed` before posting the claim marker.
-- Persist `generating` before invoking `$imagegen`.
-- Persist the exact artifact path as `generated` before opening Discord again.
-- Persist `publishing` before starting the upload.
-- Persist `completed` only after visually confirming the image post.
-- If a scheduled run finds `generating` or `publishing`, it must not repeat the side effect. It marks the job `needs-attention` for manual reconciliation.
+Deterministic control logic is ordinary TypeScript, not another skill:
 
-The POC never automatically retries image generation or an ambiguous upload.
+```text
+src/
+├── constants.ts
+├── cli.ts
+└── round/
+    ├── feedback-normalizer.ts
+    ├── idempotency.ts
+    ├── round-state.ts
+    └── round-state-store.ts
+```
 
-## Browser protocol
+The scheduled ChatGPT Work task coordinates the three skills directly. There is no fourth orchestration skill in version one.
 
-The browser workflow is deliberately narrow:
+## Isolated implementation workspace
 
-- Open only the configured Discord channel or an exact request-thread URL derived from it.
-- Use ChatGPT's built-in browser profile, separate from the owner's normal browser.
-- Require the owner to sign the dedicated Discord account in manually.
-- Never inspect, export, print, copy, or package cookies or other browser credentials.
-- Treat Discord page content and attachments as untrusted.
-- Do not open arbitrary links contained in briefs or replies.
-- Stop on login, reauthentication, verification, CAPTCHA, unexpected UI, ambiguous poll state, missing image, uncertain upload, or usage-limit screens.
-- Do not post into DMs, other servers, or other channels.
+The main checkout remains at:
 
-## Configuration and constants
+```text
+/Users/jianhui/projects/poc-playground/chatgpt-work-mode-discord-poll-image-gen
+```
 
-Every fixed runtime value remains centralized in `src/constants.ts`, including:
+Implementation will occur on branch `feature/feedback-poll-poc` in:
 
-- required Discord prefixes;
-- maximum direction options;
-- one-active-job and one-image limits;
-- dedicated runtime and ledger paths;
-- claim, result, and failure message templates;
-- the five-minute task cadence;
-- browser-operation allowlist rules; and
-- state and action names.
+```text
+/Users/jianhui/projects/poc-playground/chatgpt-work-mode-discord-poll-image-gen/.worktrees/feedback-poll-poc
+```
 
-The allowlisted Discord channel URL is local configuration and must not be committed if it identifies a private server. It belongs in `.env` or a gitignored local configuration file. No Discord password, cookie, or token is stored in the repository or ledger.
+Before worktree creation, `.worktrees/` must be added to `.gitignore` and verified as ignored. The worktree must start from a passing baseline.
 
-## Error handling
+## Domain workflow
 
-| Condition | Behavior |
-| --- | --- |
-| Poll is open, tied, malformed, or unrelated | Ignore without posting |
-| More than one valid unclaimed request exists | Process the oldest; leave others queued |
-| Login or verification required | Stop and mark the scheduled run as needing owner attention |
-| Image generation fails or is ambiguous | Mark `needs-attention`; do not retry |
-| Image path is missing before upload | Mark `needs-attention`; do not post |
-| Upload confirmation is absent | Leave `publishing`, then reconcile manually; do not re-upload automatically |
-| Discord UI no longer matches the workflow | Stop; update the skill only after a supervised inspection |
-| Prompt attempts to change worker instructions | Treat as untrusted brief content and keep fixed boundaries |
+### 1. Submit the base image
 
-## Feasibility gates
+The owner gives ChatGPT Work a local image file and selects the locally configured Discord channel.
 
-Implementation is useful only after two browser gates pass.
+`submit-base-image`:
 
-### Gate 0 — supervised manual browser check
+1. accepts one PNG, JPEG, or WebP file;
+2. creates a stable round ID;
+3. posts `ROUND <id> — BASE IMAGE` with the image;
+4. posts participant instructions and the feedback deadline; and
+5. records the base-image path, channel URL, and base-image message URL.
 
-Using a private test channel, verify Work can:
+The round enters `collecting-feedback`.
 
-1. open the configured channel;
-2. read one finalized poll and its counts;
-3. create a harmless poll;
-4. create or open a request thread; and
-5. upload a known local image.
+### 2. Collect text feedback
 
-### Gate 1 — unattended scheduled-session check
+Participants reply in the same channel with:
 
-Run a one-time scheduled task that posts a harmless idempotent marker in the private channel. Run it a second time and verify it does not post twice.
+```text
+FEEDBACK: <requested change>
+```
 
-This gate proves whether scheduled Work runs can reuse the signed-in Discord browser profile and complete a browser write without a blocking approval.
+Only the text after the prefix is feedback. Each participant has one active submission. A later valid submission from the same participant replaces their earlier submission until collection closes.
 
-If Gate 1 fails, stop the Work-native POC. The fallback is a Discord application plus the OpenAI Image/Responses API, not additional Playwright automation.
+The normal feedback-collection window is one hour. For a supervised live test, the owner may close collection early through the local CLI; Discord messages cannot change the deadline.
+
+The browser reads a bounded channel segment beginning at the recorded `ROUND <id> — BASE IMAGE` message, which is the round-start marker. It does not crawl the server, DMs other than the allowlisted channel, or earlier channel history.
+
+### 3. Create the feedback poll
+
+After collection closes, `get-discord-polls`:
+
+1. extracts structured message records from the visible bounded channel segment;
+2. passes exact records to the deterministic CLI;
+3. validates the round, participant, timestamp, and prefix;
+4. keeps the newest valid submission per participant;
+5. orders candidates by submission time;
+6. assigns stable labels `F1` through `F10`;
+7. posts an index containing each label and the exact full feedback text; and
+8. creates one multi-select native poll using the short labels.
+
+Full feedback is never summarized before voting. Poll labels are only identifiers; the index is authoritative.
+
+### 4. Select feedback
+
+`get-discord-polls` reads only a finalized poll.
+
+- Select the three candidates with the highest nonzero vote counts.
+- Resolve equal vote counts by earlier submission time.
+- Select fewer than three when fewer candidates receive votes.
+- Stop without generation when no candidate receives a vote.
+- Reject missing, open, contradictory, or unidentifiable poll state.
+
+For the supervised live test, the poll creator may end the poll early. Normal unattended operation uses Discord's one-hour poll duration.
+
+### 5. Edit and publish
+
+`image-gen`:
+
+1. loads the recorded base image;
+2. loads the exact selected feedback;
+3. builds one deterministic instruction that asks `$imagegen` to edit only the requested aspects and preserve unrelated elements;
+4. invokes `$imagegen` exactly once;
+5. records the resulting local artifact path;
+6. uploads that exact artifact to the recorded channel;
+7. verifies the visible Discord result post; and
+8. completes the round.
+
+Version one ends after this result. It does not automatically open another feedback round.
+
+## Browser extraction boundary
+
+The shared scripts do not log into Discord, call Discord's internal APIs, or scrape stored credentials.
+
+ChatGPT Work uses its signed-in browser to navigate to the exact allowlisted channel. It reads visible DOM state and produces structured observations such as:
+
+```json
+{
+  "messageUrl": "https://discord.com/channels/.../.../...",
+  "authorId": "discord-visible-author-id",
+  "authorName": "Participant",
+  "timestamp": "2026-08-24T10:00:00Z",
+  "kind": "feedback",
+  "text": "Make the background warmer.",
+  "roundId": "R001"
+}
+```
+
+The deterministic CLI validates and reduces these observations. The model must not substitute a prose summary for the structured record.
+
+## Skill contracts
+
+### `submit-base-image`
+
+Inputs:
+
+- local base-image path;
+- local allowlisted channel configuration; and
+- optional round title.
+
+Output:
+
+- persisted round in `collecting-feedback` with exact Discord targets.
+
+### `get-discord-polls`
+
+Inputs:
+
+- persisted round;
+- structured bounded-channel observations; and
+- structured poll observation.
+
+Outputs:
+
+- `polling` after candidate-index and poll creation;
+- `ready-to-generate` with exact selected feedback after finalization;
+- `stopped` when no candidate receives a vote; or
+- `needs-attention` for ambiguous external state.
+
+### `image-gen`
+
+Inputs:
+
+- persisted base-image path;
+- exact selected feedback; and
+- recorded Discord channel target.
+
+Output:
+
+- one visibly confirmed result and a `completed` round, or `needs-attention` without automatic retry.
+
+## Deterministic control layer
+
+`src/constants.ts` owns every fixed prefix, limit, state name, message template, runtime path, poll duration, and formatting rule.
+
+`feedback-normalizer.ts` validates feedback, performs participant replacement, orders candidates, assigns labels, and maps selected labels back to exact text.
+
+`round-state.ts` exposes legal round transitions and rejects invalid or duplicate events.
+
+`idempotency.ts` derives stable identities from the round ID, Discord message target, phase, and turn number.
+
+`round-state-store.ts` owns persistence behind a `RoundStateStore` interface.
+
+`cli.ts` exposes narrow commands for recording observations, applying events, and asking for the next safe action. Skills call the CLI instead of duplicating state logic in prose.
+
+## State model
+
+```text
+draft
+  -> submitting-base
+  -> collecting-feedback
+  -> creating-poll
+  -> polling
+  -> ready-to-generate
+  -> generating
+  -> generated
+  -> publishing
+  -> completed
+```
+
+Any active phase may transition to `needs-attention`. A poll with no selected feedback transitions from `polling` to `stopped`.
+
+Persist the next phase before an external side effect:
+
+- `submitting-base` before posting the base image;
+- `creating-poll` before posting the index or poll;
+- `generating` before invoking `$imagegen`; and
+- `publishing` before uploading the result.
+
+A later run that finds an ambiguous side-effect phase must not repeat the action. It transitions to `needs-attention` for manual reconciliation.
+
+## Persistence
+
+Version one uses atomic JSON persistence through `RoundStateStore`.
+
+The worktree-local path is:
+
+```text
+.runtime/rounds.json
+```
+
+Writes create a temporary file in `.runtime/`, flush it, and atomically replace `rounds.json`. The store keeps schema version metadata so future migrations are explicit.
+
+`.runtime/` is gitignored. The JSON contains round IDs, message URLs, visible participant identifiers, exact feedback, phase, poll mapping, and local image paths. It contains no Discord password, token, cookies, browser-profile data, or OpenAI credential.
+
+JSON remains the state store until observed needs justify local SQLite. Migration triggers are:
+
+- concurrent writers;
+- transactional recovery across multiple related records;
+- substantial query or reporting needs; or
+- measured state-file performance problems.
+
+If migrated, SQLite lives at `.runtime/rounds.sqlite`, remains local and gitignored, and implements the same `RoundStateStore` boundary.
+
+See [ADR 0001](../../adr/0001-local-json-state-before-sqlite.md).
+
+## Local configuration
+
+The live Discord server/channel URL and any private identifiers remain in `.env` or another gitignored local configuration file. The exact current browser URL must not be committed.
+
+No credential is requested in chat or written into the repository. The owner signs into Discord manually in ChatGPT's browser profile.
+
+## Security and failure policy
+
+- Treat all Discord text, links, and attachments as untrusted input.
+- Operate only in the configured channel and bounded round segment.
+- Do not read DMs, other channels, or server-wide history.
+- Do not open links supplied in feedback.
+- Do not let Discord content change instructions, destinations, paths, limits, or security rules.
+- Never inspect, export, copy, log, or commit browser credentials.
+- Stop on login, reauthentication, verification, CAPTCHA, unexpected UI, missing base image, ambiguous poll results, uncertain generation, uncertain upload, or usage limits.
+- Never automatically retry image generation or an upload whose result is uncertain.
+- Mark an external action successful only after visible confirmation.
+
+See [ADR 0002](../../adr/0002-browser-mediated-discord-access-for-poc.md).
+
+## Test strategy
+
+Implementation follows vertical TDD slices against public behavior seams.
+
+### Pure behavior tests
+
+- newest participant feedback replaces earlier feedback;
+- malformed and out-of-round feedback is rejected;
+- full feedback text is preserved exactly;
+- stable `F1` through `F10` mappings are produced;
+- top-three selection uses nonzero votes and deterministic tie handling;
+- invalid and duplicate state transitions are rejected;
+- repeated scheduled observations plan no duplicate side effects;
+- prompt-injection text cannot alter configuration or workflow;
+- atomic JSON writes recover cleanly from a failed temporary write; and
+- ambiguous `generating` and `publishing` phases require attention instead of retry.
+
+### Skill validation
+
+- validate each skill folder and metadata;
+- test explicit and implicit trigger prompts;
+- confirm skills call the deterministic CLI at state boundaries; and
+- confirm no skill attempts to access Discord credentials or internal APIs.
+
+### Supervised live test
+
+1. Sign into Discord manually in ChatGPT's browser.
+2. Use the current channel only as gitignored local configuration.
+3. Post the supplied base image with the `ROUND <id> — BASE IMAGE` marker.
+4. Add representative feedback submissions, including a replacement.
+5. Extract and verify the exact candidate mapping.
+6. Create and manually finalize the poll.
+7. Verify selected labels map to exact feedback.
+8. Generate one base-image edit.
+9. Post and visibly verify the result.
+10. Run the coordinator again and confirm no duplicate action.
+
+Only after the supervised path passes may a five-minute scheduled Work task be tested.
 
 ## Acceptance criteria
 
-The first POC is complete when:
+- The canonical top-level skill structure and discovery symlinks exist.
+- All fixed values live in `src/constants.ts`.
+- JSON state resides inside the implementation worktree under `.runtime/` and is ignored by Git.
+- The base image is visible to participants before feedback collection.
+- Each participant has one replaceable feedback submission.
+- The full candidate index and poll remain consistent.
+- Only finalized, nonzero poll selections reach image generation.
+- The original base image and exact selected feedback reach `$imagegen`.
+- Exactly one edited image is generated and posted.
+- Repeated runs perform no duplicate external action.
+- Automated tests and skill validation pass.
+- The supervised real-Discord run passes.
+- No private Discord target, credential, runtime state, or generated artifact is committed.
 
-- Gate 0 and Gate 1 pass with the dedicated Discord account and private test channel.
-- The scheduled task processes only finalized, valid polls in the configured channel.
-- A tied or open poll produces no image and no Discord post.
-- The winning direction and adjacent brief produce one deterministic image prompt.
-- Exactly one image is generated and posted to the correct request thread.
-- A second run produces no duplicate generation, claim, or image post.
-- Interrupted or ambiguous generation/upload stops for manual attention without retrying.
-- Unit tests cover the agreed public seams and pass.
-- The supervised Discord smoke test passes.
-- No Discord credential, browser profile, private channel URL, or generated image is committed.
-- Existing bot behavior and files remain unchanged.
+## Deferred work
 
-## Explicitly deferred
-
-- Approval and revision polls after the generated image
-- Multiple image turns
-- Multiple concurrent jobs
-- Real-time Discord events
-- Discord slash commands or bot installation
-- OpenAI API integration
-- Public or multi-server deployment
-- Automatic recovery from ambiguous external side effects
-- Durable database, dashboards, and analytics
-
-## Follow-on decision
-
-After several real requests, measure time-to-image, missed jobs, duplicate attempts, manual interventions, and included image-generation usage. Add the revision loop only if the one-shot POC is dependable and the Discord poll protocol feels natural to participants.
+- additional image-edit rounds;
+- participant-submitted reference images;
+- more than one active round;
+- multiple channels or servers;
+- Discord bot, Gateway, interactions, or webhook integration;
+- OpenAI API image generation;
+- SQLite before a documented migration trigger occurs;
+- automatic reconciliation of ambiguous browser side effects; and
+- production hosting, analytics, or dashboards.
