@@ -14,7 +14,7 @@ afterEach(async () => {
 });
 
 describe("round CLI lifecycle", () => {
-  it("persists every external-action boundary and completes exactly one image turn", async () => {
+  it("completes one five-message image round across every external-action boundary", async () => {
     const directory = await mkdtemp(join(tmpdir(), "feedback-round-lifecycle-"));
     temporaryDirectories.push(directory);
     const store = new JsonRoundStateStore(join(directory, "rounds.json"));
@@ -22,103 +22,84 @@ describe("round CLI lifecycle", () => {
     await writeFile(requestedBaseImagePath, "test image fixture", "utf8");
     const baseImagePath = await realpath(requestedBaseImagePath);
 
-    const baseAction = await executeCommand(
-      "prepare-base-submission",
-      {
-        roundId: "R100",
-        baseImagePath,
-        channelUrl: "https://discord.test/channels/allowlisted"
-      },
-      store,
-      { baseImageStagingRoot: directory }
-    );
-    expect(baseAction).toMatchObject({
+    expect(
+      await executeCommand(
+        "prepare-base-submission",
+        {
+          roundId: "R100",
+          baseImagePath,
+          channelUrl: "https://discord.test/channels/allowlisted"
+        },
+        store,
+        { baseImageStagingRoot: directory }
+      )
+    ).toMatchObject({
       action: "post-base-image",
       operationId: "R100:submitting-base:1:469d047ee160"
     });
-    expect((await store.get("R100"))?.phase).toBe("submitting-base");
 
     await executeCommand(
       "confirm-base-submission",
       {
         roundId: "R100",
         baseMessageUrl: "https://discord.test/messages/base",
-        feedbackOpensAt: "2026-08-24T10:00:00.000Z",
-        feedbackClosesAt: "2026-08-24T11:00:00.000Z"
-      },
-      store
-    );
-    await executeCommand(
-      "collect-feedback",
-      {
-        roundId: "R100",
-        observedAt: "2026-08-24T11:00:00.000Z",
-        messages: [
-          {
-            messageUrl: "https://discord.test/messages/feedback",
-            authorId: "alice",
-            authorName: "Alice",
-            timestamp: "2026-08-24T10:10:00.000Z",
-            kind: "feedback",
-            roundId: "R100",
-            text: "FEEDBACK: Make the background warmer."
-          }
-        ]
-      },
-      store
-    );
-    await executeCommand(
-      "confirm-poll-created",
-      { roundId: "R100", pollMessageUrl: "https://discord.test/messages/poll" },
-      store
-    );
-    await executeCommand(
-      "record-poll-results",
-      {
-        roundId: "R100",
-        pollMessageUrl: "https://discord.test/messages/poll",
-        finalized: true,
-        votes: { F1: 2 }
+        collectionStartedAt: "2026-08-24T10:00:00.000Z"
       },
       store
     );
 
-    const generationAction = await executeCommand(
-      "prepare-generation",
-      { roundId: "R100" },
+    expect(
+      await executeCommand(
+        "collect-messages",
+        {
+          roundId: "R100",
+          boundaryMessageUrl: "https://discord.test/messages/base",
+          messages: Array.from({ length: 5 }, (_, index) => ({
+            kind: "ordinary-text",
+            roundId: "R100",
+            boundaryMessageUrl: "https://discord.test/messages/base",
+            messageUrl: `https://discord.test/messages/${index + 1}`,
+            authorId: "same-author",
+            authorName: "Same author",
+            timestamp: `2026-08-24T10:0${index + 1}:00.000Z`,
+            text: `change ${index + 1}`
+          }))
+        },
+        store
+      )
+    ).toMatchObject({
+      action: "post-collection-closed",
+      operationId: "R100:closing-collection:1:469d047ee160"
+    });
+
+    await executeCommand(
+      "confirm-collection-closed",
+      { roundId: "R100", closedMessageUrl: "https://discord.test/messages/closed" },
       store
     );
-    expect(generationAction).toEqual({
+    expect(await executeCommand("prepare-generation", { roundId: "R100" }, store)).toMatchObject({
       action: "generate-image",
-      operationId: "R100:generating:1:16e1daee7f6b",
-      roundId: "R100",
-      baseImagePath,
-      instruction:
-        "Edit the supplied base image using only these requested changes:\n- Make the background warmer.\nPreserve all unrelated subjects, composition, style, and details. Produce exactly one edited image."
+      operationId: "R100:generating:1:16e1daee7f6b"
     });
-    expect((await store.get("R100"))?.phase).toBe("generating");
 
     const resultImagePath = join(directory, "result.png");
     await writeFile(resultImagePath, "test result fixture", "utf8");
     await executeCommand(
       "confirm-generation",
-      { roundId: "R100", resultImagePath },
+      { roundId: "R100", outcome: "succeeded", resultImagePath },
       store
     );
-    const publicationAction = await executeCommand(
-      "prepare-publication",
-      { roundId: "R100" },
-      store
-    );
-    expect(publicationAction).toMatchObject({
+    expect(
+      await executeCommand("prepare-publication", { roundId: "R100" }, store)
+    ).toMatchObject({
       action: "post-result-image",
-      operationId: "R100:publishing:1:469d047ee160",
+      operationId: "R100:publishing-outcome:1:469d047ee160",
       resultImagePath,
-      channelUrl: "https://discord.test/channels/allowlisted"
+      caption: "===== RESULT: R100 ====="
     });
     await executeCommand(
       "confirm-publication",
-      { roundId: "R100", resultMessageUrl: "https://discord.test/messages/result" },
+      { roundId: "R100", outcomeMessageUrl: "https://discord.test/messages/result" },
       store
     );
 
@@ -126,6 +107,10 @@ describe("round CLI lifecycle", () => {
       type: "none",
       reason: "Round is already completed."
     });
-    expect((await store.get("R100"))?.phase).toBe("completed");
+    expect(await store.get("R100")).toMatchObject({
+      phase: "completed",
+      generationOutcome: { kind: "succeeded", resultImagePath },
+      outcomeMessageUrl: "https://discord.test/messages/result"
+    });
   });
 });

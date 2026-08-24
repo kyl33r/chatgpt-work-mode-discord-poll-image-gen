@@ -28,10 +28,10 @@ Start exactly one round without accessing Discord credentials or APIs.
 6. Verify the returned channel equals the local allowlist. The command has already persisted `submitting-base`; do not run it again if posting becomes uncertain.
 7. Use the signed-in Discord web UI to open the exact channel.
 8. Obtain action-time confirmation before posting unless the owner explicitly requested this exact live post in the current turn.
-9. Post the returned caption with the returned base image. Read its visible message timestamp as `feedbackOpensAt`, calculate `feedbackClosesAt` exactly one hour later, then post the returned participant instructions with that absolute deadline.
-10. Confirm both posts are visibly present and capture the stable base-image message URL.
-11. Put `{ "roundId", "baseMessageUrl", "feedbackOpensAt", "feedbackClosesAt" }` in `.runtime/confirm-base.json` and run `npm run round -- confirm-base-submission < .runtime/confirm-base.json`.
-12. Report the round ID and deadline without exposing private channel identifiers.
+9. Post the returned caption and returned Base Image together as one Discord message. Do not add a second instruction message after the boundary.
+10. Confirm that exact post is visibly present, capture its stable message URL, and read its visible timestamp as `collectionStartedAt`.
+11. Put `{ "roundId", "baseMessageUrl", "collectionStartedAt" }` in `.runtime/confirm-base.json` and run `npm run round -- confirm-base-submission < .runtime/confirm-base.json`.
+12. Report only the round ID and that collection started; do not expose private channel identifiers.
 
 If login, verification, upload, destination, or visible confirmation is uncertain, run `npm run round -- mark-attention` with JSON `{ "roundId", "reason" }` on stdin and stop. Never retry an uncertain post.
 

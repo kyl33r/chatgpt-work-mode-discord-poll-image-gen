@@ -1,19 +1,23 @@
-import type { FeedbackCandidate, SelectedFeedback } from "./feedback-normalizer.js";
 import { ROUND_SCHEMA_VERSION } from "../constants.js";
+import type { CapturedMessage } from "./message-collector.js";
 
 export type RoundPhase =
   | "draft"
   | "submitting-base"
-  | "collecting-feedback"
-  | "creating-poll"
-  | "polling"
+  | "collecting-messages"
+  | "closing-collection"
   | "ready-to-generate"
   | "generating"
-  | "generated"
-  | "publishing"
+  | "outcome-ready"
+  | "publishing-outcome"
   | "completed"
   | "stopped"
   | "needs-attention";
+
+export type GenerationOutcome =
+  | { kind: "succeeded"; resultImagePath: string }
+  | { kind: "refused" }
+  | { kind: "failed" };
 
 export interface RoundState {
   schemaVersion: typeof ROUND_SCHEMA_VERSION;
@@ -21,14 +25,13 @@ export interface RoundState {
   phase: RoundPhase;
   baseImagePath: string;
   channelUrl: string;
+  messageLimit: number;
   baseMessageUrl?: string;
-  feedbackOpensAt?: string;
-  feedbackClosesAt?: string;
-  candidates?: FeedbackCandidate[];
-  pollMessageUrl?: string;
-  selectedFeedback?: SelectedFeedback[];
-  resultImagePath?: string;
-  resultMessageUrl?: string;
+  collectionStartedAt?: string;
+  capturedMessages: CapturedMessage[];
+  closedMessageUrl?: string;
+  generationOutcome?: GenerationOutcome;
+  outcomeMessageUrl?: string;
   attentionReason?: string;
 }
 
@@ -37,24 +40,25 @@ export type RoundEvent =
   | {
       type: "base-submission-confirmed";
       baseMessageUrl: string;
-      feedbackOpensAt: string;
-      feedbackClosesAt: string;
+      collectionStartedAt: string;
     }
-  | { type: "feedback-collection-closed"; candidates: FeedbackCandidate[] }
-  | { type: "feedback-collection-empty" }
-  | { type: "poll-created"; pollMessageUrl: string }
-  | { type: "poll-finalized"; selectedFeedback: SelectedFeedback[] }
-  | { type: "poll-finalized-empty" }
+  | { type: "message-collection-progressed"; capturedMessages: CapturedMessage[] }
+  | { type: "message-collection-filled"; capturedMessages: CapturedMessage[] }
+  | { type: "collection-closed"; closedMessageUrl: string }
   | { type: "generation-started" }
-  | { type: "generation-confirmed"; resultImagePath: string }
-  | { type: "publication-started" }
-  | { type: "publication-confirmed"; resultMessageUrl: string }
+  | { type: "generation-succeeded"; resultImagePath: string }
+  | { type: "generation-refused" }
+  | { type: "generation-failed" }
+  | { type: "outcome-publication-started" }
+  | { type: "outcome-publication-confirmed"; outcomeMessageUrl: string }
+  | { type: "round-stopped" }
   | { type: "attention-required"; reason: string };
 
 export interface CreateRoundInput {
   id: string;
   baseImagePath: string;
   channelUrl: string;
+  messageLimit: number;
 }
 
 export function createRound(input: CreateRoundInput): RoundState {
@@ -63,7 +67,9 @@ export function createRound(input: CreateRoundInput): RoundState {
     id: input.id,
     phase: "draft",
     baseImagePath: input.baseImagePath,
-    channelUrl: input.channelUrl
+    channelUrl: input.channelUrl,
+    messageLimit: input.messageLimit,
+    capturedMessages: []
   };
 }
 
@@ -76,56 +82,70 @@ export function applyRoundEvent(round: RoundState, event: RoundEvent): RoundStat
   ) {
     return { ...round, phase: "needs-attention", attentionReason: event.reason };
   }
-
+  if (event.type === "round-stopped" && !isTerminal(round.phase)) {
+    return { ...round, phase: "stopped" };
+  }
   if (round.phase === "draft" && event.type === "base-submission-started") {
     return { ...round, phase: "submitting-base" };
   }
-
   if (round.phase === "submitting-base" && event.type === "base-submission-confirmed") {
     return {
       ...round,
-      phase: "collecting-feedback",
+      phase: "collecting-messages",
       baseMessageUrl: event.baseMessageUrl,
-      feedbackOpensAt: event.feedbackOpensAt,
-      feedbackClosesAt: event.feedbackClosesAt
+      collectionStartedAt: event.collectionStartedAt
     };
   }
-
-  if (round.phase === "collecting-feedback" && event.type === "feedback-collection-closed") {
-    return { ...round, phase: "creating-poll", candidates: event.candidates };
+  if (
+    round.phase === "collecting-messages" &&
+    event.type === "message-collection-progressed"
+  ) {
+    if (event.capturedMessages.length >= round.messageLimit) {
+      throw new Error("In-progress collection must remain below the configured message limit.");
+    }
+    return { ...round, capturedMessages: event.capturedMessages };
   }
-
-  if (round.phase === "collecting-feedback" && event.type === "feedback-collection-empty") {
-    return { ...round, phase: "stopped", candidates: [] };
+  if (round.phase === "collecting-messages" && event.type === "message-collection-filled") {
+    if (event.capturedMessages.length !== round.messageLimit) {
+      throw new Error("Filled collection must match the configured message limit.");
+    }
+    return {
+      ...round,
+      phase: "closing-collection",
+      capturedMessages: event.capturedMessages
+    };
   }
-
-  if (round.phase === "creating-poll" && event.type === "poll-created") {
-    return { ...round, phase: "polling", pollMessageUrl: event.pollMessageUrl };
+  if (round.phase === "closing-collection" && event.type === "collection-closed") {
+    return { ...round, phase: "ready-to-generate", closedMessageUrl: event.closedMessageUrl };
   }
-
-  if (round.phase === "polling" && event.type === "poll-finalized") {
-    return { ...round, phase: "ready-to-generate", selectedFeedback: event.selectedFeedback };
-  }
-
-  if (round.phase === "polling" && event.type === "poll-finalized-empty") {
-    return { ...round, phase: "stopped", selectedFeedback: [] };
-  }
-
   if (round.phase === "ready-to-generate" && event.type === "generation-started") {
     return { ...round, phase: "generating" };
   }
-
-  if (round.phase === "generating" && event.type === "generation-confirmed") {
-    return { ...round, phase: "generated", resultImagePath: event.resultImagePath };
+  if (round.phase === "generating" && event.type === "generation-succeeded") {
+    return {
+      ...round,
+      phase: "outcome-ready",
+      generationOutcome: { kind: "succeeded", resultImagePath: event.resultImagePath }
+    };
   }
-
-  if (round.phase === "generated" && event.type === "publication-started") {
-    return { ...round, phase: "publishing" };
+  if (round.phase === "generating" && event.type === "generation-refused") {
+    return { ...round, phase: "outcome-ready", generationOutcome: { kind: "refused" } };
   }
-
-  if (round.phase === "publishing" && event.type === "publication-confirmed") {
-    return { ...round, phase: "completed", resultMessageUrl: event.resultMessageUrl };
+  if (round.phase === "generating" && event.type === "generation-failed") {
+    return { ...round, phase: "outcome-ready", generationOutcome: { kind: "failed" } };
   }
-
+  if (round.phase === "outcome-ready" && event.type === "outcome-publication-started") {
+    return { ...round, phase: "publishing-outcome" };
+  }
+  if (
+    round.phase === "publishing-outcome" &&
+    event.type === "outcome-publication-confirmed"
+  ) {
+    return { ...round, phase: "completed", outcomeMessageUrl: event.outcomeMessageUrl };
+  }
   throw new Error(`Invalid round transition: ${round.phase} + ${event.type}`);
+}
+
+function isTerminal(phase: RoundPhase): boolean {
+  return phase === "completed" || phase === "stopped" || phase === "needs-attention";
 }

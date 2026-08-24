@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 const EXPECTED_SKILLS = ["get-discord-polls", "image-gen", "submit-base-image"] as const;
 
 const DISCOVERY_CUES: Record<(typeof EXPECTED_SKILLS)[number], readonly string[]> = {
-  "get-discord-polls": ["feedback", "poll", "finalized"],
+  "get-discord-polls": ["messages", "poll", "boundary"],
   "image-gen": ["edit", "base image", "feedback"],
   "submit-base-image": ["submit", "base image", "feedback"]
 };
@@ -14,7 +14,7 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
   (typeof EXPECTED_SKILLS)[number],
   readonly (readonly string[])[]
 > = {
-  "get-discord-polls": [["collect", "resolve", "count", "create"], ["feedback", "poll"]],
+  "get-discord-polls": [["collect", "scan", "close"], ["message", "poll", "feedback"]],
   "image-gen": [["edit", "generate", "publish"], ["image"], ["feedback", "poll"]],
   "submit-base-image": [["submit", "post", "start"], ["image"], ["feedback", "discord"]]
 };
@@ -23,9 +23,8 @@ const REQUIRED_COMMANDS: Record<(typeof EXPECTED_SKILLS)[number], readonly strin
   "get-discord-polls": [
     "plan-next",
     "get-round",
-    "collect-feedback",
-    "confirm-poll-created",
-    "record-poll-results",
+    "collect-messages",
+    "confirm-collection-closed",
     "mark-attention"
   ],
   "image-gen": [
@@ -40,6 +39,17 @@ const REQUIRED_COMMANDS: Record<(typeof EXPECTED_SKILLS)[number], readonly strin
     "prepare-base-submission",
     "confirm-base-submission",
     "mark-attention"
+  ]
+};
+
+const FORBIDDEN_SKILL_TERMS: Partial<
+  Record<(typeof EXPECTED_SKILLS)[number], readonly string[]>
+> = {
+  "get-discord-polls": [
+    "collect-feedback",
+    "confirm-poll-created",
+    "record-poll-results",
+    "native Discord poll"
   ]
 };
 
@@ -58,6 +68,17 @@ export function matchesSkillPrompt(skillName: string, prompt: string): boolean {
 
 export async function validateSkills(repositoryRoot: string): Promise<string[]> {
   const issues: string[] = [];
+  const agentInstructions = await readFile(resolve(repositoryRoot, "AGENTS.md"), "utf8");
+  for (const requiredPolicy of [
+    "Never expose secrets or private identifiers",
+    "The sole canonical project-skill source is `<project-root>/skills/`",
+    "`.agents/skills/` is only a Codex discovery index of symlinks",
+    "Never put raw image-generation errors"
+  ]) {
+    if (!agentInstructions.includes(requiredPolicy)) {
+      issues.push(`AGENTS.md is missing required policy: ${requiredPolicy}`);
+    }
+  }
   const skillsRoot = resolve(repositoryRoot, "skills");
   const actualSkills = (await readdir(skillsRoot, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
@@ -89,6 +110,11 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     for (const command of REQUIRED_COMMANDS[skillName]) {
       if (!skillMarkdown.includes(command)) {
         issues.push(`${skillName}: required CLI boundary ${command} is missing.`);
+      }
+    }
+    for (const term of FORBIDDEN_SKILL_TERMS[skillName] ?? []) {
+      if (skillMarkdown.includes(term)) {
+        issues.push(`${skillName}: obsolete workflow term ${term} must be removed.`);
       }
     }
     if (!/stop|fail|reject|never/i.test(skillMarkdown)) {

@@ -31,11 +31,11 @@ The skill stages the selected image under gitignored `.runtime/base-images/`. It
 ## Run one supervised round
 
 1. Invoke `$submit-base-image` with the ChatGPT attachment or exact Discord message link.
-2. Let participants reply in the same conversation with `FEEDBACK: <requested change>`.
-3. At the deadline, invoke `$get-discord-polls` to publish the exact feedback index and native multi-select poll.
-4. End the poll early for a supervised test, or wait for its one-hour duration.
-5. Invoke `$get-discord-polls` again to record finalized votes.
-6. Invoke `$image-gen` to make one edit and publish one Result Image.
+2. Let any participants post ordinary non-empty text after the Base Image boundary. No prefix is required and repeated authors count.
+3. Keep `$get-discord-polls` active for bounded scans until the configured five-message limit is reached.
+4. Confirm the returned closed-marker post; later messages no longer count.
+5. Invoke `$image-gen` for exactly one edit attempt using all five exact messages in arrival order.
+6. Publish exactly one controlled outcome: the Result Image, sanitized refusal, or sanitized failure status.
 
 The skills request confirmation at live posting boundaries when required. If Discord login, destination, poll state, image generation, or upload confirmation is ambiguous, the round pauses as `needs-attention` and does not retry automatically.
 

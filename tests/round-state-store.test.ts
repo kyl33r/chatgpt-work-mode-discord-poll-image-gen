@@ -22,7 +22,8 @@ describe("JsonRoundStateStore", () => {
     const round = createRound({
       id: "R001",
       baseImagePath: "/tmp/base.png",
-      channelUrl: "https://discord.test/channels/one"
+      channelUrl: "https://discord.test/channels/one",
+      messageLimit: 5
     });
 
     await store.save(round);
@@ -30,8 +31,19 @@ describe("JsonRoundStateStore", () => {
 
     expect(await store.get("R001")).toEqual(round);
     expect(JSON.parse(await readFile(statePath, "utf8"))).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       rounds: [round]
     });
+  });
+
+  it("rejects obsolete native-poll state instead of reinterpreting it", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "feedback-round-store-"));
+    temporaryDirectories.push(directory);
+    const statePath = join(directory, "rounds.json");
+    await writeFile(statePath, '{"schemaVersion":1,"rounds":[]}', "utf8");
+
+    await expect(new JsonRoundStateStore(statePath).list()).rejects.toThrow(
+      "Unsupported or malformed round-state file."
+    );
   });
 });

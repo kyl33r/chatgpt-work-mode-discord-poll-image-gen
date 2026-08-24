@@ -1,4 +1,4 @@
 interface:
   display_name: "Get Discord Polls"
-  short_description: "Collect feedback and resolve Discord polls"
-  default_prompt: "Use $get-discord-polls to collect round feedback and resolve its finalized Discord poll."
+  short_description: "Scan and close a bounded Discord text poll"
+  default_prompt: "Use $get-discord-polls to scan the bounded Discord text poll and close it after the configured message count."

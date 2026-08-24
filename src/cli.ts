@@ -4,24 +4,24 @@ import { fileURLToPath } from "node:url";
 
 import {
   BASE_IMAGE_STAGING_ROOT,
-  FEEDBACK_INDEX_TEMPLATE,
-  FEEDBACK_WINDOW_MS,
+  DISCORD_SCAN_INTERVAL_MS,
+  FEEDBACK_MESSAGE_LIMIT,
+  GENERATION_FAILED_TEMPLATE,
+  GENERATION_REFUSED_TEMPLATE,
   IMAGE_EDIT_PREAMBLE,
   IMAGE_EDIT_SUFFIX,
+  MESSAGE_COLLECTION_INSTRUCTIONS_TEMPLATE,
   OPERATION_TURN_NUMBER,
-  PARTICIPANT_INSTRUCTIONS,
-  POLL_DURATION_HOURS,
-  POLL_QUESTION_TEMPLATE,
+  POLL_CLOSED_MARKER_TEMPLATE,
+  POLL_START_MARKER_TEMPLATE,
   RESULT_MARKER_TEMPLATE,
-  ROUND_MARKER_TEMPLATE,
   ROUND_STATE_PATH,
   SUPPORTED_IMAGE_EXTENSIONS
 } from "./constants.js";
 import {
-  collectFeedbackCandidates,
-  selectFeedback,
-  type FeedbackMessage
-} from "./round/feedback-normalizer.js";
+  collectMessages,
+  type DiscordMessageObservation
+} from "./round/message-collector.js";
 import { createOperationId, planNextAction } from "./round/idempotency.js";
 import { applyRoundEvent, createRound, type RoundEvent } from "./round/round-state.js";
 import {
@@ -29,11 +29,16 @@ import {
   type RoundStateStore
 } from "./round/round-state-store.js";
 
+interface CommandOptions {
+  allowedChannelUrl?: string;
+  baseImageStagingRoot?: string;
+}
+
 export async function executeCommand(
   command: string,
   payload: unknown,
   store: RoundStateStore,
-  options: { allowedChannelUrl?: string; baseImageStagingRoot?: string } = {}
+  options: CommandOptions = {}
 ): Promise<unknown> {
   await assertAllowedChannel(command, payload, store, options.allowedChannelUrl);
   if (command === "prepare-base-submission") {
@@ -44,19 +49,23 @@ export async function executeCommand(
     );
   }
   if (command === "confirm-base-submission") {
-    return applyNamedEvent(payload, store, createBaseSubmissionConfirmedEvent);
-  }
-  if (command === "collect-feedback") {
-    return collectFeedback(payload, store);
-  }
-  if (command === "confirm-poll-created") {
     return applyNamedEvent(payload, store, (record) => ({
-      type: "poll-created",
-      pollMessageUrl: requireString(record.pollMessageUrl, "payload.pollMessageUrl")
+      type: "base-submission-confirmed",
+      baseMessageUrl: requireString(record.baseMessageUrl, "payload.baseMessageUrl"),
+      collectionStartedAt: requireIsoTimestamp(
+        record.collectionStartedAt,
+        "payload.collectionStartedAt"
+      )
     }));
   }
-  if (command === "record-poll-results") {
-    return recordPollResults(payload, store);
+  if (command === "collect-messages") {
+    return collectRoundMessages(payload, store);
+  }
+  if (command === "confirm-collection-closed") {
+    return applyNamedEvent(payload, store, (record) => ({
+      type: "collection-closed",
+      closedMessageUrl: requireString(record.closedMessageUrl, "payload.closedMessageUrl")
+    }));
   }
   if (command === "prepare-generation") {
     return prepareGeneration(payload, store);
@@ -69,20 +78,12 @@ export async function executeCommand(
   }
   if (command === "confirm-publication") {
     return applyNamedEvent(payload, store, (record) => ({
-      type: "publication-confirmed",
-      resultMessageUrl: requireString(record.resultMessageUrl, "payload.resultMessageUrl")
+      type: "outcome-publication-confirmed",
+      outcomeMessageUrl: requireString(record.outcomeMessageUrl, "payload.outcomeMessageUrl")
     }));
   }
   if (command === "plan-next") {
-    const record = requireRecord(payload, "payload");
-    const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
-    const action = planNextAction(round, new Date().toISOString());
-    if (action.type === "needs-attention" && round.phase !== "needs-attention") {
-      await store.save(
-        applyRoundEvent(round, { type: "attention-required", reason: action.reason })
-      );
-    }
-    return action;
+    return planNext(payload, store);
   }
   if (command === "get-round") {
     const record = requireRecord(payload, "payload");
@@ -93,6 +94,9 @@ export async function executeCommand(
       type: "attention-required",
       reason: requireString(record.reason, "payload.reason")
     }));
+  }
+  if (command === "stop-round") {
+    return applyNamedEvent(payload, store, () => ({ type: "round-stopped" }));
   }
   throw new Error(`Unknown command: ${command}`);
 }
@@ -113,31 +117,10 @@ async function assertAllowedChannel(
     }
     return;
   }
-  const roundId = requireString(record.roundId, "payload.roundId");
-  const round = await store.get(roundId);
+  const round = await store.get(requireString(record.roundId, "payload.roundId"));
   if (round && round.channelUrl !== allowedChannelUrl) {
     throw new Error("Round channel does not match DISCORD_CHANNEL_URL.");
   }
-}
-
-function createBaseSubmissionConfirmedEvent(record: Record<string, unknown>): RoundEvent {
-  const feedbackOpensAt = requireIsoTimestamp(
-    record.feedbackOpensAt,
-    "payload.feedbackOpensAt"
-  );
-  const feedbackClosesAt = requireIsoTimestamp(
-    record.feedbackClosesAt,
-    "payload.feedbackClosesAt"
-  );
-  if (Date.parse(feedbackClosesAt) - Date.parse(feedbackOpensAt) !== FEEDBACK_WINDOW_MS) {
-    throw new Error("Feedback must close exactly one hour after it opens.");
-  }
-  return {
-    type: "base-submission-confirmed",
-    baseMessageUrl: requireString(record.baseMessageUrl, "payload.baseMessageUrl"),
-    feedbackOpensAt,
-    feedbackClosesAt
-  };
 }
 
 async function prepareBaseSubmission(
@@ -168,7 +151,8 @@ async function prepareBaseSubmission(
   const draft = createRound({
     id: roundId,
     baseImagePath,
-    channelUrl: requireString(record.channelUrl, "payload.channelUrl")
+    channelUrl: requireString(record.channelUrl, "payload.channelUrl"),
+    messageLimit: FEEDBACK_MESSAGE_LIMIT
   });
   const submitting = applyRoundEvent(draft, { type: "base-submission-started" });
   await store.save(submitting);
@@ -183,32 +167,83 @@ async function prepareBaseSubmission(
     roundId,
     baseImagePath: submitting.baseImagePath,
     channelUrl: submitting.channelUrl,
-    caption: ROUND_MARKER_TEMPLATE.replace("<id>", roundId),
-    participantInstructions: PARTICIPANT_INSTRUCTIONS
+    caption: [
+      POLL_START_MARKER_TEMPLATE.replace("<id>", roundId),
+      MESSAGE_COLLECTION_INSTRUCTIONS_TEMPLATE.replace(
+        "<limit>",
+        String(FEEDBACK_MESSAGE_LIMIT)
+      )
+    ].join("\n")
   };
 }
 
-async function applyNamedEvent(
-  payload: unknown,
-  store: RoundStateStore,
-  createEvent: (record: Record<string, unknown>) => RoundEvent
-): Promise<unknown> {
-  const record = requireRecord(payload, "payload");
-  const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
-  const nextRound = applyRoundEvent(round, createEvent(record));
-  await store.save(nextRound);
-  return { action: "recorded", roundId: round.id, phase: nextRound.phase };
+async function collectRoundMessages(payload: unknown, store: RoundStateStore): Promise<unknown> {
+  const input = parseCollectMessagesPayload(payload);
+  const round = await requireRound(store, input.roundId);
+  if (
+    round.phase !== "collecting-messages" ||
+    !round.baseMessageUrl ||
+    !round.collectionStartedAt
+  ) {
+    throw new Error(`Round ${round.id} is not collecting messages.`);
+  }
+  if (input.boundaryMessageUrl !== round.baseMessageUrl) {
+    throw new Error("Message observation does not match the active round boundary.");
+  }
+  const collection = collectMessages({
+    roundId: round.id,
+    boundaryMessageUrl: round.baseMessageUrl,
+    collectionStartedAt: round.collectionStartedAt,
+    limit: round.messageLimit,
+    existing: round.capturedMessages,
+    observed: input.messages
+  });
+  if (!collection.complete) {
+    await store.save(
+      applyRoundEvent(round, {
+        type: "message-collection-progressed",
+        capturedMessages: collection.captured
+      })
+    );
+    return {
+      action: "wait",
+      roundId: round.id,
+      capturedCount: collection.captured.length,
+      remainingCount: round.messageLimit - collection.captured.length,
+      scanIntervalMs: DISCORD_SCAN_INTERVAL_MS
+    };
+  }
+  const closing = applyRoundEvent(round, {
+    type: "message-collection-filled",
+    capturedMessages: collection.captured
+  });
+  await store.save(closing);
+  return {
+    action: "post-collection-closed",
+    operationId: createOperationId(
+      round.id,
+      "closing-collection",
+      OPERATION_TURN_NUMBER,
+      round.channelUrl
+    ),
+    roundId: round.id,
+    channelUrl: round.channelUrl,
+    caption: POLL_CLOSED_MARKER_TEMPLATE.replace("<id>", round.id),
+    capturedMessages: collection.captured
+  };
 }
 
 async function prepareGeneration(payload: unknown, store: RoundStateStore): Promise<unknown> {
   const record = requireRecord(payload, "payload");
   const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
-  if (round.phase !== "ready-to-generate" || !round.selectedFeedback?.length) {
+  if (round.phase !== "ready-to-generate" || round.capturedMessages.length !== round.messageLimit) {
     throw new Error(`Round ${round.id} is not ready to generate.`);
   }
   const generating = applyRoundEvent(round, { type: "generation-started" });
   await store.save(generating);
-  const feedbackLines = round.selectedFeedback.map(({ text }) => `- ${text}`).join("\n");
+  const feedbackLines = round.capturedMessages
+    .map(({ text }, index) => `${index + 1}. ${text}`)
+    .join("\n");
   return {
     action: "generate-image",
     operationId: createOperationId(
@@ -226,41 +261,94 @@ async function prepareGeneration(payload: unknown, store: RoundStateStore): Prom
 async function confirmGeneration(payload: unknown, store: RoundStateStore): Promise<unknown> {
   const record = requireRecord(payload, "payload");
   const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
-  const resultImagePath = requireString(record.resultImagePath, "payload.resultImagePath");
-  await requireExistingImage(
-    resultImagePath,
-    "Result image must be an existing PNG, JPEG, or WebP file."
-  );
-  const generated = applyRoundEvent(round, { type: "generation-confirmed", resultImagePath });
-  await store.save(generated);
-  return { action: "recorded", roundId: round.id, phase: generated.phase };
+  if (round.phase !== "generating") {
+    throw new Error(`Round ${round.id} is not recording a generation outcome.`);
+  }
+  const outcome = requireString(record.outcome, "payload.outcome");
+  let event: RoundEvent;
+  if (outcome === "succeeded") {
+    const resultImagePath = requireString(record.resultImagePath, "payload.resultImagePath");
+    await requireExistingImage(
+      resultImagePath,
+      "Result image must be an existing PNG, JPEG, or WebP file."
+    );
+    event = { type: "generation-succeeded", resultImagePath };
+  } else if (outcome === "refused") {
+    event = { type: "generation-refused" };
+  } else if (outcome === "failed") {
+    event = { type: "generation-failed" };
+  } else {
+    throw new Error("payload.outcome must be succeeded, refused, or failed.");
+  }
+  const outcomeReady = applyRoundEvent(round, event);
+  await store.save(outcomeReady);
+  return { action: "recorded", roundId: round.id, phase: outcomeReady.phase };
 }
 
 async function preparePublication(payload: unknown, store: RoundStateStore): Promise<unknown> {
   const record = requireRecord(payload, "payload");
   const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
-  if (round.phase !== "generated" || !round.resultImagePath) {
-    throw new Error(`Round ${round.id} has no confirmed result to publish.`);
+  if (round.phase !== "outcome-ready" || !round.generationOutcome) {
+    throw new Error(`Round ${round.id} has no confirmed outcome to publish.`);
   }
-  await requireExistingImage(
-    round.resultImagePath,
-    "Recorded result image is missing or unsupported."
-  );
-  const publishing = applyRoundEvent(round, { type: "publication-started" });
+  if (round.generationOutcome.kind === "succeeded") {
+    await requireExistingImage(
+      round.generationOutcome.resultImagePath,
+      "Recorded result image is missing or unsupported."
+    );
+  }
+  const publishing = applyRoundEvent(round, { type: "outcome-publication-started" });
   await store.save(publishing);
-  return {
-    action: "post-result-image",
+  const shared = {
     operationId: createOperationId(
       round.id,
-      "publishing",
+      "publishing-outcome",
       OPERATION_TURN_NUMBER,
       round.channelUrl
     ),
     roundId: round.id,
-    resultImagePath: round.resultImagePath,
-    channelUrl: round.channelUrl,
-    caption: RESULT_MARKER_TEMPLATE.replace("<id>", round.id)
+    channelUrl: round.channelUrl
   };
+  if (round.generationOutcome.kind === "succeeded") {
+    return {
+      action: "post-result-image",
+      ...shared,
+      resultImagePath: round.generationOutcome.resultImagePath,
+      caption: RESULT_MARKER_TEMPLATE.replace("<id>", round.id)
+    };
+  }
+  return {
+    action: "post-status-message",
+    ...shared,
+    caption: (round.generationOutcome.kind === "refused"
+      ? GENERATION_REFUSED_TEMPLATE
+      : GENERATION_FAILED_TEMPLATE
+    ).replace("<id>", round.id)
+  };
+}
+
+async function planNext(payload: unknown, store: RoundStateStore): Promise<unknown> {
+  const record = requireRecord(payload, "payload");
+  const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
+  const action = planNextAction(round);
+  if (action.type === "needs-attention" && round.phase !== "needs-attention") {
+    await store.save(
+      applyRoundEvent(round, { type: "attention-required", reason: action.reason })
+    );
+  }
+  return action;
+}
+
+async function applyNamedEvent(
+  payload: unknown,
+  store: RoundStateStore,
+  createEvent: (record: Record<string, unknown>) => RoundEvent
+): Promise<unknown> {
+  const record = requireRecord(payload, "payload");
+  const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
+  const nextRound = applyRoundEvent(round, createEvent(record));
+  await store.save(nextRound);
+  return { action: "recorded", roundId: round.id, phase: nextRound.phase };
 }
 
 async function requireExistingImage(path: string, errorMessage: string): Promise<void> {
@@ -299,180 +387,48 @@ async function requireStagedImagePath(path: string, stagingRoot: string): Promis
   return resolvedPath;
 }
 
+interface CollectMessagesPayload {
+  roundId: string;
+  boundaryMessageUrl: string;
+  messages: DiscordMessageObservation[];
+}
+
+function parseCollectMessagesPayload(payload: unknown): CollectMessagesPayload {
+  const record = requireRecord(payload, "payload");
+  if (!Array.isArray(record.messages)) {
+    throw new Error("payload.messages must be an array.");
+  }
+  return {
+    roundId: requireString(record.roundId, "payload.roundId"),
+    boundaryMessageUrl: requireString(
+      record.boundaryMessageUrl,
+      "payload.boundaryMessageUrl"
+    ),
+    messages: record.messages.map((message, index) => {
+      const item = requireRecord(message, `payload.messages[${index}]`);
+      return {
+        kind: requireMessageKind(item.kind, `payload.messages[${index}].kind`),
+        roundId: requireString(item.roundId, `payload.messages[${index}].roundId`),
+        boundaryMessageUrl: requireString(
+          item.boundaryMessageUrl,
+          `payload.messages[${index}].boundaryMessageUrl`
+        ),
+        messageUrl: requireString(item.messageUrl, `payload.messages[${index}].messageUrl`),
+        authorId: requireString(item.authorId, `payload.messages[${index}].authorId`),
+        authorName: requireString(item.authorName, `payload.messages[${index}].authorName`),
+        timestamp: requireIsoTimestamp(item.timestamp, `payload.messages[${index}].timestamp`),
+        text: requireText(item.text, `payload.messages[${index}].text`)
+      };
+    })
+  };
+}
+
 async function requireRound(store: RoundStateStore, roundId: string) {
   const round = await store.get(roundId);
   if (!round) {
     throw new Error(`Round not found: ${roundId}`);
   }
   return round;
-}
-
-async function collectFeedback(payload: unknown, store: RoundStateStore): Promise<unknown> {
-  const input = parseCollectFeedbackPayload(payload);
-  const round = await store.get(input.roundId);
-  if (!round) {
-    throw new Error(`Round not found: ${input.roundId}`);
-  }
-  if (round.phase !== "collecting-feedback") {
-    throw new Error(`Round ${round.id} is not collecting feedback.`);
-  }
-  if (!round.feedbackOpensAt || !round.feedbackClosesAt) {
-    throw new Error(`Round ${round.id} has no authoritative feedback window.`);
-  }
-
-  const opensAt = Date.parse(round.feedbackOpensAt);
-  const scheduledClose = Date.parse(round.feedbackClosesAt);
-  const observedAt = Date.parse(input.observedAt);
-  if (observedAt < opensAt) {
-    throw new Error("Feedback cannot close before it opens.");
-  }
-  if (!input.ownerClosedEarly && observedAt < scheduledClose) {
-    throw new Error("The feedback deadline has not passed.");
-  }
-  const effectiveClose = input.ownerClosedEarly
-    ? new Date(Math.min(observedAt, scheduledClose)).toISOString()
-    : round.feedbackClosesAt;
-
-  const candidates = collectFeedbackCandidates({
-    roundId: round.id,
-    opensAt: round.feedbackOpensAt,
-    closesAt: effectiveClose,
-    messages: input.messages
-  });
-  if (candidates.length === 0) {
-    await store.save(applyRoundEvent(round, { type: "feedback-collection-empty" }));
-    return { action: "stop", roundId: round.id, reason: "No valid feedback was collected." };
-  }
-  const nextRound = applyRoundEvent(round, {
-    type: "feedback-collection-closed",
-    candidates
-  });
-  await store.save(nextRound);
-
-  return {
-    action: "create-poll",
-    roundId: round.id,
-    indexText: [
-      FEEDBACK_INDEX_TEMPLATE.replace("<id>", round.id),
-      ...candidates.map((candidate) => `${candidate.label} — ${candidate.text}`)
-    ].join("\n"),
-    pollQuestion: POLL_QUESTION_TEMPLATE.replace("<id>", round.id),
-    pollOptionLabels: candidates.map((candidate) => candidate.label),
-    pollDurationHours: POLL_DURATION_HOURS,
-    allowMultipleSelections: true,
-    candidates
-  };
-}
-
-async function recordPollResults(payload: unknown, store: RoundStateStore): Promise<unknown> {
-  const input = parsePollResultsPayload(payload);
-  const round = await store.get(input.roundId);
-  if (!round) {
-    throw new Error(`Round not found: ${input.roundId}`);
-  }
-  if (round.phase !== "polling" || !round.candidates) {
-    throw new Error(`Round ${round.id} is not waiting for poll results.`);
-  }
-  if (!round.pollMessageUrl || input.pollMessageUrl !== round.pollMessageUrl) {
-    throw new Error("Poll observation does not match the recorded feedback poll.");
-  }
-
-  const candidateLabels = new Set(round.candidates.map((candidate) => candidate.label));
-  for (const label of Object.keys(input.votes)) {
-    if (!candidateLabels.has(label)) {
-      throw new Error(`Poll contains an unknown candidate label: ${label}`);
-    }
-  }
-  for (const label of candidateLabels) {
-    if (!(label in input.votes)) {
-      throw new Error(`Poll observation is missing candidate label: ${label}`);
-    }
-  }
-
-  const selectedFeedback = selectFeedback({
-    finalized: input.finalized,
-    candidates: round.candidates,
-    votes: input.votes
-  });
-  const nextRound = applyRoundEvent(
-    round,
-    selectedFeedback.length === 0
-      ? { type: "poll-finalized-empty" }
-      : { type: "poll-finalized", selectedFeedback }
-  );
-  await store.save(nextRound);
-
-  if (selectedFeedback.length === 0) {
-    return { action: "stop", roundId: round.id, reason: "No feedback received a vote." };
-  }
-  return {
-    action: "generate-image",
-    roundId: round.id,
-    baseImagePath: round.baseImagePath,
-    selectedFeedback
-  };
-}
-
-interface CollectFeedbackPayload {
-  roundId: string;
-  observedAt: string;
-  ownerClosedEarly: boolean;
-  messages: FeedbackMessage[];
-}
-
-interface PollResultsPayload {
-  roundId: string;
-  pollMessageUrl: string;
-  finalized: boolean;
-  votes: Record<string, number>;
-}
-
-function parseCollectFeedbackPayload(payload: unknown): CollectFeedbackPayload {
-  const record = requireRecord(payload, "payload");
-  const messages = record.messages;
-  if (!Array.isArray(messages)) {
-    throw new Error("payload.messages must be an array.");
-  }
-
-  return {
-    roundId: requireString(record.roundId, "payload.roundId"),
-    observedAt: requireIsoTimestamp(record.observedAt, "payload.observedAt"),
-    ownerClosedEarly: record.ownerClosedEarly === true,
-    messages: messages.map((message, index) => {
-      const item = requireRecord(message, `payload.messages[${index}]`);
-      return {
-        messageUrl: requireString(item.messageUrl, `payload.messages[${index}].messageUrl`),
-        authorId: requireString(item.authorId, `payload.messages[${index}].authorId`),
-        authorName: requireString(item.authorName, `payload.messages[${index}].authorName`),
-        timestamp: requireIsoTimestamp(item.timestamp, `payload.messages[${index}].timestamp`),
-        kind: requireLiteralFeedback(item.kind, `payload.messages[${index}].kind`),
-        roundId: requireString(item.roundId, `payload.messages[${index}].roundId`),
-        text: requireString(item.text, `payload.messages[${index}].text`)
-      };
-    })
-  };
-}
-
-function parsePollResultsPayload(payload: unknown): PollResultsPayload {
-  const record = requireRecord(payload, "payload");
-  if (typeof record.finalized !== "boolean") {
-    throw new Error("payload.finalized must be a boolean.");
-  }
-  const rawVotes = requireRecord(record.votes, "payload.votes");
-  const votes = Object.fromEntries(
-    Object.entries(rawVotes).map(([label, value]) => {
-      if (!Number.isInteger(value) || (value as number) < 0) {
-        throw new Error(`payload.votes.${label} must be a non-negative integer.`);
-      }
-      return [label, value as number];
-    })
-  );
-  return {
-    roundId: requireString(record.roundId, "payload.roundId"),
-    pollMessageUrl: requireString(record.pollMessageUrl, "payload.pollMessageUrl"),
-    finalized: record.finalized,
-    votes
-  };
 }
 
 function requireRecord(value: unknown, name: string): Record<string, unknown> {
@@ -489,9 +445,19 @@ function requireString(value: unknown, name: string): string {
   return value;
 }
 
-function requireLiteralFeedback(value: unknown, name: string): "feedback" {
-  if (value !== "feedback") {
-    throw new Error(`${name} must be feedback.`);
+function requireText(value: unknown, name: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${name} must be a string.`);
+  }
+  return value;
+}
+
+function requireMessageKind(
+  value: unknown,
+  name: string
+): DiscordMessageObservation["kind"] {
+  if (value !== "ordinary-text" && value !== "system" && value !== "attachment-only") {
+    throw new Error(`${name} is not a supported Discord message kind.`);
   }
   return value;
 }
@@ -513,14 +479,13 @@ async function main(): Promise<void> {
   for await (const chunk of process.stdin) {
     rawPayload += chunk.toString();
   }
-  const payload: unknown = JSON.parse(rawPayload);
   const allowedChannelUrl = process.env.DISCORD_CHANNEL_URL;
   if (!allowedChannelUrl) {
     throw new Error("DISCORD_CHANNEL_URL is required in the local .env file.");
   }
   const result = await executeCommand(
     command,
-    payload,
+    JSON.parse(rawPayload) as unknown,
     new JsonRoundStateStore(ROUND_STATE_PATH),
     { allowedChannelUrl }
   );
@@ -529,8 +494,7 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   main().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`${message}\n`);
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   });
 }

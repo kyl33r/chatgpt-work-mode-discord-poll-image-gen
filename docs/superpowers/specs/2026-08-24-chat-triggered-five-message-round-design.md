@@ -2,7 +2,7 @@
 
 Date: 2026-08-24
 
-Status: Approved design; awaiting written-spec review before implementation planning.
+Status: Implemented; awaiting supervised live Discord acceptance.
 
 Supersedes: `2026-08-24-discord-work-skill-poc-design.md`
 

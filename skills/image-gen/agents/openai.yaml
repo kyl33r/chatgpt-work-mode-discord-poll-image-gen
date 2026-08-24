@@ -1,4 +1,4 @@
 interface:
   display_name: "Generate Feedback Image"
-  short_description: "Edit and publish the selected image result"
-  default_prompt: "Use $image-gen to edit the base image from selected feedback and publish the result."
+  short_description: "Edit and publish one controlled outcome"
+  default_prompt: "Use $image-gen to attempt the Base Image edit and publish its controlled Discord outcome."
