@@ -69,7 +69,7 @@ The POC uses one new project skill plus existing ChatGPT capabilities:
 
 | Component | Responsibility |
 | --- | --- |
-| `.codex/skills/discord-image-poll-worker/` | Top-level Work workflow and fail-closed browser instructions |
+| `.agents/skills/discord-image-poll-worker/` | Repo-scoped Work workflow and fail-closed browser instructions |
 | ChatGPT browser | Operate the signed-in Discord web UI |
 | `$imagegen` | Generate one image from the normalized prompt |
 | Pure TypeScript planning core | Validate normalized poll observations, choose the next action, build the prompt, and enforce state transitions |
