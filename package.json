@@ -1,0 +1,20 @@
+{
+  "name": "chatgpt-work-mode-discord-poll-image-gen",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "round": "tsx --env-file=.env src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "validate:skills": "tsx scripts/validate-skills.ts",
+    "verify": "npm test && npm run build && npm run validate:skills"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Submit Base Image"
+  short_description: "Start a Discord image feedback round"
+  default_prompt: "Use $submit-base-image to post a base image and open a feedback round."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Get Discord Polls"
+  short_description: "Collect feedback and resolve Discord polls"
+  default_prompt: "Use $get-discord-polls to collect round feedback and resolve its finalized Discord poll."
