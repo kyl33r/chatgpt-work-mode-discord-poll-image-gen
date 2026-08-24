@@ -1,4 +1,5 @@
 .env
+.worktrees/
 .runtime/
 generated/
 node_modules/
