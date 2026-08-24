@@ -20,10 +20,16 @@ import {
 } from "./constants.js";
 import {
   collectMessages,
+  MessageCollectionAmbiguityError,
   type DiscordMessageObservation
 } from "./round/message-collector.js";
 import { createOperationId, planNextAction } from "./round/idempotency.js";
-import { applyRoundEvent, createRound, type RoundEvent } from "./round/round-state.js";
+import {
+  applyRoundEvent,
+  createRound,
+  type RoundEvent,
+  type RoundPhase
+} from "./round/round-state.js";
 import {
   JsonRoundStateStore,
   type RoundStateStore
@@ -96,7 +102,7 @@ export async function executeCommand(
     }));
   }
   if (command === "stop-round") {
-    return applyNamedEvent(payload, store, () => ({ type: "round-stopped" }));
+    return stopRound(payload, store);
   }
   throw new Error(`Unknown command: ${command}`);
 }
@@ -190,14 +196,26 @@ async function collectRoundMessages(payload: unknown, store: RoundStateStore): P
   if (input.boundaryMessageUrl !== round.baseMessageUrl) {
     throw new Error("Message observation does not match the active round boundary.");
   }
-  const collection = collectMessages({
-    roundId: round.id,
-    boundaryMessageUrl: round.baseMessageUrl,
-    collectionStartedAt: round.collectionStartedAt,
-    limit: round.messageLimit,
-    existing: round.capturedMessages,
-    observed: input.messages
-  });
+  let collection;
+  try {
+    collection = collectMessages({
+      roundId: round.id,
+      boundaryMessageUrl: round.baseMessageUrl,
+      collectionStartedAt: round.collectionStartedAt,
+      limit: round.messageLimit,
+      existing: round.capturedMessages,
+      observed: input.messages
+    });
+  } catch (error) {
+    if (!(error instanceof MessageCollectionAmbiguityError)) {
+      throw error;
+    }
+    const reason = "Discord message order is ambiguous; reconcile the round manually.";
+    await store.save(
+      applyRoundEvent(round, { type: "attention-required", reason })
+    );
+    return { action: "needs-attention", roundId: round.id, reason };
+  }
   if (!collection.complete) {
     await store.save(
       applyRoundEvent(round, {
@@ -337,6 +355,39 @@ async function planNext(payload: unknown, store: RoundStateStore): Promise<unkno
     );
   }
   return action;
+}
+
+const AMBIGUOUS_SIDE_EFFECT_PHASES: ReadonlySet<RoundPhase> = new Set([
+  "submitting-base",
+  "closing-collection",
+  "generating",
+  "publishing-outcome"
+]);
+
+async function stopRound(payload: unknown, store: RoundStateStore): Promise<unknown> {
+  const record = requireRecord(payload, "payload");
+  const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
+  if (AMBIGUOUS_SIDE_EFFECT_PHASES.has(round.phase)) {
+    const reason =
+      "Cancellation was requested while an external action may be in flight; reconcile the round manually.";
+    const attention = applyRoundEvent(round, { type: "attention-required", reason });
+    await store.save(attention);
+    return { action: "needs-attention", roundId: round.id, reason };
+  }
+  if (
+    round.phase !== "draft" &&
+    !(
+      round.phase === "collecting-messages" &&
+      round.capturedMessages.length < round.messageLimit
+    )
+  ) {
+    throw new Error(
+      `Round ${round.id} can only be cancelled before the message threshold.`
+    );
+  }
+  const stopped = applyRoundEvent(round, { type: "round-stopped" });
+  await store.save(stopped);
+  return { action: "recorded", roundId: round.id, phase: stopped.phase };
 }
 
 async function applyNamedEvent(

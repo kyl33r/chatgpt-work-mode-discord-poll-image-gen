@@ -116,6 +116,31 @@ describe("executeCommand", () => {
     ).toEqual({ action: "recorded", roundId: "R001", phase: "ready-to-generate" });
   });
 
+  it("persists needs-attention when a scan has ambiguous message order", async () => {
+    const store = await createStore();
+    await store.save(collectingRound("R001"));
+
+    expect(
+      await executeCommand(
+        "collect-messages",
+        {
+          roundId: "R001",
+          boundaryMessageUrl: "base-message",
+          messages: [observation(2), observation(1)]
+        },
+        store
+      )
+    ).toEqual({
+      action: "needs-attention",
+      roundId: "R001",
+      reason: "Discord message order is ambiguous; reconcile the round manually."
+    });
+    expect(await store.get("R001")).toMatchObject({
+      phase: "needs-attention",
+      attentionReason: "Discord message order is ambiguous; reconcile the round manually."
+    });
+  });
+
   it("prepares one image edit from all five frozen messages", async () => {
     const store = await createStore();
     let round = collectingRound("RGEN");
@@ -205,6 +230,33 @@ describe("executeCommand", () => {
       attentionReason:
         "The collection-closed marker may already have been posted; reconcile it manually."
     });
+  });
+
+  it("allows cancellation only while safely collecting below the threshold", async () => {
+    const collectingStore = await createStore();
+    await collectingStore.save(collectingRound("RCANCEL"));
+    expect(
+      await executeCommand("stop-round", { roundId: "RCANCEL" }, collectingStore)
+    ).toEqual({ action: "recorded", roundId: "RCANCEL", phase: "stopped" });
+
+    const ambiguousStore = await createStore();
+    await ambiguousStore.save({ ...collectingRound("RAMBIGUOUS"), phase: "generating" });
+    expect(
+      await executeCommand("stop-round", { roundId: "RAMBIGUOUS" }, ambiguousStore)
+    ).toEqual({
+      action: "needs-attention",
+      roundId: "RAMBIGUOUS",
+      reason: "Cancellation was requested while an external action may be in flight; reconcile the round manually."
+    });
+    expect(await ambiguousStore.get("RAMBIGUOUS")).toMatchObject({
+      phase: "needs-attention"
+    });
+
+    const readyStore = await createStore();
+    await readyStore.save(readyRound("RTOOLATE"));
+    await expect(
+      executeCommand("stop-round", { roundId: "RTOOLATE" }, readyStore)
+    ).rejects.toThrow("Round RTOOLATE can only be cancelled before the message threshold.");
   });
 
   it("rejects an existing Base Image outside the staging root and through a symlink escape", async () => {

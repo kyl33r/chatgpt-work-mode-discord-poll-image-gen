@@ -74,6 +74,19 @@ describe("collectMessages", () => {
     ).toThrow("Message observations are not in Discord arrival order.");
   });
 
+  it("fails closed when a rescan discovers an earlier message after later ones were persisted", () => {
+    expect(() =>
+      collectMessages({
+        roundId: "R001",
+        boundaryMessageUrl: "boundary",
+        collectionStartedAt: "2026-08-24T10:00:00.000Z",
+        limit: 5,
+        existing: [captured("3", "carol", "already captured", "10:03")],
+        observed: [message("2", "bob", "missed on the first scan", "10:02")]
+      })
+    ).toThrow("A rescan discovered a message before the persisted collection boundary.");
+  });
+
   it("rejects a message timestamped before the confirmed Base Image boundary", () => {
     expect(() =>
       collectMessages({
@@ -124,6 +137,25 @@ describe("collectMessages", () => {
         captured("2", "bob", "second", "10:04"),
         captured("3", "carol", "third", "10:05")
       ]
+    });
+  });
+
+  it("does not count the Base Image boundary message as feedback", () => {
+    expect(
+      collectMessages({
+        roundId: "R001",
+        boundaryMessageUrl: "boundary",
+        collectionStartedAt: "2026-08-24T10:00:00.000Z",
+        limit: 2,
+        existing: [],
+        observed: [
+          message("boundary", "owner", "===== POLL START: R001 =====", "10:00"),
+          message("1", "alice", "first feedback", "10:01")
+        ]
+      })
+    ).toEqual({
+      complete: false,
+      captured: [captured("1", "alice", "first feedback", "10:01")]
     });
   });
 });

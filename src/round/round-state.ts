@@ -82,7 +82,12 @@ export function applyRoundEvent(round: RoundState, event: RoundEvent): RoundStat
   ) {
     return { ...round, phase: "needs-attention", attentionReason: event.reason };
   }
-  if (event.type === "round-stopped" && !isTerminal(round.phase)) {
+  if (
+    event.type === "round-stopped" &&
+    (round.phase === "draft" ||
+      (round.phase === "collecting-messages" &&
+        round.capturedMessages.length < round.messageLimit))
+  ) {
     return { ...round, phase: "stopped" };
   }
   if (round.phase === "draft" && event.type === "base-submission-started") {

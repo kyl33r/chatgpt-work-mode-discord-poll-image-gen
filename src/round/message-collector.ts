@@ -31,6 +31,13 @@ export interface CollectionResult {
   captured: CapturedMessage[];
 }
 
+export class MessageCollectionAmbiguityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MessageCollectionAmbiguityError";
+  }
+}
+
 export function collectMessages(input: CollectMessagesInput): CollectionResult {
   if (!Number.isInteger(input.limit) || input.limit <= 0) {
     throw new Error("Message limit must be a positive integer.");
@@ -49,7 +56,9 @@ export function collectMessages(input: CollectMessagesInput): CollectionResult {
     }
     const timestamp = Date.parse(observation.timestamp);
     if (!Number.isFinite(timestamp) || timestamp < previousTimestamp) {
-      throw new Error("Message observations are not in Discord arrival order.");
+      throw new MessageCollectionAmbiguityError(
+        "Message observations are not in Discord arrival order."
+      );
     }
     if (timestamp < collectionStartedAt) {
       throw new Error("Message observation predates the active round boundary.");
@@ -59,6 +68,15 @@ export function collectMessages(input: CollectMessagesInput): CollectionResult {
 
   const captured = [...input.existing];
   const capturedUrls = new Set(captured.map((message) => message.messageUrl));
+  const latestPersistedTimestamp = captured.reduce((latest, message) => {
+    const timestamp = Date.parse(message.timestamp);
+    if (!Number.isFinite(timestamp)) {
+      throw new MessageCollectionAmbiguityError(
+        "Persisted message order cannot be established."
+      );
+    }
+    return Math.max(latest, timestamp);
+  }, Number.NEGATIVE_INFINITY);
 
   for (const observation of input.observed) {
     if (captured.length >= input.limit) {
@@ -67,9 +85,15 @@ export function collectMessages(input: CollectMessagesInput): CollectionResult {
     if (
       observation.kind !== "ordinary-text" ||
       observation.text.trim().length === 0 ||
+      observation.messageUrl === input.boundaryMessageUrl ||
       capturedUrls.has(observation.messageUrl)
     ) {
       continue;
+    }
+    if (Date.parse(observation.timestamp) <= latestPersistedTimestamp) {
+      throw new MessageCollectionAmbiguityError(
+        "A rescan discovered a message before the persisted collection boundary."
+      );
     }
     captured.push({
       messageUrl: observation.messageUrl,

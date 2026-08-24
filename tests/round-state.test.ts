@@ -65,6 +65,20 @@ describe("round state", () => {
       })
     ).toThrow("Filled collection must match the configured message limit.");
   });
+
+  it("rejects stop transitions once collection has reached an external side-effect phase", () => {
+    const draft = createRound({
+      id: "RSTOP",
+      baseImagePath: "/tmp/base.png",
+      channelUrl: "https://discord.test/channels/one",
+      messageLimit: 5
+    });
+    const submitting = applyRoundEvent(draft, { type: "base-submission-started" });
+
+    expect(() => applyRoundEvent(submitting, { type: "round-stopped" })).toThrow(
+      "Invalid round transition: submitting-base + round-stopped"
+    );
+  });
 });
 
 function fiveMessages() {
