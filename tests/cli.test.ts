@@ -410,13 +410,13 @@ describe("executeCommand", () => {
     const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
     await mkdir(feedbackRoot, { recursive: true });
     const first = join(feedbackRoot, "message-1-attachment-0.png");
-    const second = join(feedbackRoot, "message-2-attachment-0.webp");
-    await writeFile(first, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-    await writeFile(second, Buffer.from("RIFF0000WEBP", "ascii"));
+    const second = join(feedbackRoot, "message-2-attachment-0.png");
+    await writeFile(first, validPng());
+    await writeFile(second, validPng());
     const artifacts = new JsonRoundArtifactStore(roundsRoot);
     const messages = [1, 2, 3, 4, 5].map(observation);
     messages[0]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png", imagePath: first }];
-    messages[1]!.attachments = [{ attachmentIndex: 0, mediaType: "image/webp", imagePath: second }];
+    messages[1]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png", imagePath: second }];
 
     await runCommand(
       "collect-messages",
@@ -759,4 +759,24 @@ function runCommand(
     workflowLock: new InMemoryWorkflowLock(),
     ...options
   });
+}
+
+function validPng(): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  const chunk = (type: string, data: Buffer) => {
+    const value = Buffer.alloc(12 + data.length);
+    value.writeUInt32BE(data.length, 0);
+    value.write(type, 4, 4, "ascii");
+    data.copy(value, 8);
+    return value;
+  };
+  return Buffer.concat([
+    signature,
+    chunk("IHDR", ihdr),
+    chunk("IDAT", Buffer.from([0])),
+    chunk("IEND", Buffer.alloc(0))
+  ]);
 }

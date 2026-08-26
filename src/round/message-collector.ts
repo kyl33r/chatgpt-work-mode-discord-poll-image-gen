@@ -74,7 +74,7 @@ export function collectMessages(input: CollectMessagesInput): CollectionResult {
       throw new Error("Message observation does not match the active round boundary.");
     }
     const timestamp = Date.parse(observation.timestamp);
-    if (!Number.isFinite(timestamp) || timestamp < previousTimestamp) {
+    if (!Number.isFinite(timestamp) || timestamp <= previousTimestamp) {
       throw new MessageCollectionAmbiguityError(
         "Message observations are not in Discord arrival order."
       );

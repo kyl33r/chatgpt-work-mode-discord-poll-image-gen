@@ -330,11 +330,21 @@ async function collectRoundMessages(
   }
   try {
     const existingUrls = new Set(round.capturedMessages.map((message) => message.messageUrl));
-    for (const message of collection.captured) {
+    for (const [messageIndex, message] of collection.captured.entries()) {
       for (const image of message.contextImages) {
         image.imagePath = existingUrls.has(message.messageUrl)
-          ? await requireArtifactStore(artifacts).requireFeedbackImage(round.id, image.imagePath)
-          : await requireArtifactStore(artifacts).acceptFeedbackImage(round.id, image.imagePath);
+          ? await requireArtifactStore(artifacts).requireFeedbackImage(
+              round.id,
+              messageIndex + 1,
+              image.attachmentIndex,
+              image.imagePath
+            )
+          : await requireArtifactStore(artifacts).acceptFeedbackImage(
+              round.id,
+              messageIndex + 1,
+              image.attachmentIndex,
+              image.imagePath
+            );
       }
     }
   } catch {
@@ -443,11 +453,20 @@ async function prepareGeneration(
   let contextImagePaths: string[];
   try {
     contextImagePaths = [];
-    for (const message of round.capturedMessages) {
+    const seenPaths = new Set<string>();
+    for (const [messageIndex, message] of round.capturedMessages.entries()) {
       for (const image of message.contextImages) {
-        contextImagePaths.push(
-          await requireArtifactStore(artifacts).requireFeedbackImage(round.id, image.imagePath)
+        const validated = await requireArtifactStore(artifacts).requireFeedbackImage(
+          round.id,
+          messageIndex + 1,
+          image.attachmentIndex,
+          image.imagePath
         );
+        if (seenPaths.has(validated)) {
+          throw new Error("Participant image context contains a duplicate path.");
+        }
+        seenPaths.add(validated);
+        contextImagePaths.push(validated);
       }
     }
   } catch {
