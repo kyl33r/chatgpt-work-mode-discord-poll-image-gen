@@ -2,7 +2,7 @@
 
 A Work-native proof of concept for collaborative image editing in Discord.
 
-The owner starts a round from ChatGPT with a Base Image attached here or linked from one exact Discord message. ChatGPT Work posts it to the allowlisted channel, captures the first configured number of ordinary non-empty text messages plus bounded optional participant images after that boundary, synthesizes and publicly records one final prompt, attempts one edit with `$imagegen`, and returns one controlled success, refusal, or failure outcome to Discord.
+The owner starts a round from ChatGPT with a Base Image attached here or linked from one exact Discord message. ChatGPT Work posts it to the allowlisted channel, captures the first configured number of ordinary non-empty text messages after that boundary, synthesizes and publicly records one final prompt, attempts one edit with `$imagegen`, and returns one controlled success, refusal, or failure outcome to Discord.
 
 The POC deliberately uses no Discord bot, Discord token, incoming webhook, OpenAI API key, or second Playwright-controlled ChatGPT browser.
 
@@ -45,12 +45,12 @@ Skills are supervised workflows, not background listeners. `$round-start` keeps 
 
 1. Start from an explicit owner instruction in ChatGPT.
 2. Post one Base Image and start marker into one allowlisted Discord channel.
-3. Capture the first five ordinary non-empty text messages, including repeated authors and random text. Each message may contribute the first two supported attachments, capped at five participant images for the round.
+3. Capture the first five ordinary non-empty text messages, including repeated authors and random text.
 4. Synthesize all five messages into one sanitized prompt and post it with the closed marker; later messages are ignored.
 5. Attempt one Base Image edit here using that exact persisted prompt.
 6. Post and visibly confirm one Result Image or sanitized refusal/failure status without duplicating side effects.
 
-Use `$continue-from-result` to start a new isolated round from the Result Image of the most recently completed successful round in the allowlisted channel. Participant images are supporting context only: the Base Image remains the edit target and references are never republished directly. Native voting remains deferred.
+Use `$continue-from-result` to start a new isolated round from the Result Image of the most recently completed successful round in the allowlisted channel. Participant reference images and native voting remain deferred until their separate path is proven.
 
 ## Local state
 
@@ -79,7 +79,6 @@ See [Discord setup](docs/discord-setup.md) before running the supervised browser
 - [ADR 0005: persist one public synthesized prompt](docs/adr/0005-persist-one-public-synthesized-prompt.md)
 - [ADR 0006: isolated storage-neutral round state](docs/adr/0006-isolate-round-state-behind-storage-interface.md)
 - [ADR 0007: JSON Discord Channel Allowlist](docs/adr/0007-store-discord-channel-allowlist-in-state.md)
-- [ADR 0008: bounded participant-image context](docs/adr/0008-bounded-participant-image-context.md)
 - [Isolated Round State Capsules design](docs/superpowers/specs/2026-08-26-isolated-round-state-capsules-design.md)
 
 The existing bot-based experiment remains separate in `kyl33r/discord-image-feedback-relay`.

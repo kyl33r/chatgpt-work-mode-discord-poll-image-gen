@@ -3,8 +3,6 @@ import { fileURLToPath } from "node:url";
 import {
   DISCORD_CHANNEL_ALLOWLIST_PATH,
   DISCORD_SCAN_INTERVAL_MS,
-  FEEDBACK_IMAGE_LIMIT_PER_MESSAGE,
-  FEEDBACK_IMAGE_LIMIT_PER_ROUND,
   FEEDBACK_MESSAGE_LIMIT,
   FINAL_IMAGE_PROMPT_LABEL,
   GENERATION_FAILED_TEMPLATE,
@@ -103,7 +101,7 @@ async function executeLockedCommand(
     }));
   }
   if (command === "collect-messages") {
-    return collectRoundMessages(payload, store, artifacts);
+    return collectRoundMessages(payload, store);
   }
   if (command === "prepare-prompt-synthesis") {
     return preparePromptSynthesis(payload, store);
@@ -118,7 +116,7 @@ async function executeLockedCommand(
     }));
   }
   if (command === "prepare-generation") {
-    return prepareGeneration(payload, store, artifacts);
+    return prepareGeneration(payload, store);
   }
   if (command === "confirm-generation") {
     return confirmGeneration(
@@ -238,7 +236,10 @@ async function prepareContinuation(
     channelUrl: submitting.channelUrl,
     caption: [
       POLL_START_MARKER_TEMPLATE.replace("<id>", roundId),
-      messageCollectionInstructions()
+      MESSAGE_COLLECTION_INSTRUCTIONS_TEMPLATE.replace(
+        "<limit>",
+        String(FEEDBACK_MESSAGE_LIMIT)
+      )
     ].join("\n")
   };
 }
@@ -286,16 +287,15 @@ async function prepareBaseSubmission(
     channelUrl: submitting.channelUrl,
     caption: [
       POLL_START_MARKER_TEMPLATE.replace("<id>", roundId),
-      messageCollectionInstructions()
+      MESSAGE_COLLECTION_INSTRUCTIONS_TEMPLATE.replace(
+        "<limit>",
+        String(FEEDBACK_MESSAGE_LIMIT)
+      )
     ].join("\n")
   };
 }
 
-async function collectRoundMessages(
-  payload: unknown,
-  store: RoundStateStore,
-  artifacts: RoundArtifactStore | undefined
-): Promise<unknown> {
+async function collectRoundMessages(payload: unknown, store: RoundStateStore): Promise<unknown> {
   const input = parseCollectMessagesPayload(payload);
   const round = await requireRound(store, input.roundId);
   if (
@@ -326,30 +326,6 @@ async function collectRoundMessages(
     await store.save(
       applyRoundEvent(round, { type: "attention-required", reason })
     );
-    return { action: "needs-attention", roundId: round.id, reason };
-  }
-  try {
-    const existingUrls = new Set(round.capturedMessages.map((message) => message.messageUrl));
-    for (const [messageIndex, message] of collection.captured.entries()) {
-      for (const image of message.contextImages) {
-        image.imagePath = existingUrls.has(message.messageUrl)
-          ? await requireArtifactStore(artifacts).requireFeedbackImage(
-              round.id,
-              messageIndex + 1,
-              image.attachmentIndex,
-              image.imagePath
-            )
-          : await requireArtifactStore(artifacts).acceptFeedbackImage(
-              round.id,
-              messageIndex + 1,
-              image.attachmentIndex,
-              image.imagePath
-            );
-      }
-    }
-  } catch {
-    const reason = "A selected participant image is missing, invalid, or ambiguously staged.";
-    await store.save(applyRoundEvent(round, { type: "attention-required", reason }));
     return { action: "needs-attention", roundId: round.id, reason };
   }
   if (!collection.complete) {
@@ -393,10 +369,7 @@ async function preparePromptSynthesis(
   return {
     action: "synthesize-prompt",
     roundId: round.id,
-    feedbackTexts: round.capturedMessages.map((message) => message.text),
-    contextImagePaths: round.capturedMessages.flatMap((message) =>
-      message.contextImages.map((image) => image.imagePath)
-    )
+    feedbackTexts: round.capturedMessages.map((message) => message.text)
   };
 }
 
@@ -410,8 +383,7 @@ async function confirmSynthesizedPrompt(
     throw new Error(`Round ${round.id} is not accepting a Synthesized Prompt.`);
   }
   const synthesizedPrompt = validateSynthesizedPrompt(
-    requireString(record.synthesizedPrompt, "payload.synthesizedPrompt"),
-    round.capturedMessages.some((message) => message.contextImages.length > 0)
+    requireString(record.synthesizedPrompt, "payload.synthesizedPrompt")
   );
   const closing = applyRoundEvent(round, {
     type: "synthesized-prompt-confirmed",
@@ -436,11 +408,7 @@ async function confirmSynthesizedPrompt(
   };
 }
 
-async function prepareGeneration(
-  payload: unknown,
-  store: RoundStateStore,
-  artifacts: RoundArtifactStore | undefined
-): Promise<unknown> {
+async function prepareGeneration(payload: unknown, store: RoundStateStore): Promise<unknown> {
   const record = requireRecord(payload, "payload");
   const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
   if (
@@ -449,30 +417,6 @@ async function prepareGeneration(
     !round.synthesizedPrompt
   ) {
     throw new Error(`Round ${round.id} is not ready to generate.`);
-  }
-  let contextImagePaths: string[];
-  try {
-    contextImagePaths = [];
-    const seenPaths = new Set<string>();
-    for (const [messageIndex, message] of round.capturedMessages.entries()) {
-      for (const image of message.contextImages) {
-        const validated = await requireArtifactStore(artifacts).requireFeedbackImage(
-          round.id,
-          messageIndex + 1,
-          image.attachmentIndex,
-          image.imagePath
-        );
-        if (seenPaths.has(validated)) {
-          throw new Error("Participant image context contains a duplicate path.");
-        }
-        seenPaths.add(validated);
-        contextImagePaths.push(validated);
-      }
-    }
-  } catch {
-    const reason = "Persisted participant image context is missing or invalid.";
-    await store.save(applyRoundEvent(round, { type: "attention-required", reason }));
-    return { action: "needs-attention", roundId: round.id, reason };
   }
   const generating = applyRoundEvent(round, { type: "generation-started" });
   await store.save(generating);
@@ -486,7 +430,6 @@ async function prepareGeneration(
     ),
     roundId: round.id,
     baseImagePath: round.baseImagePath,
-    contextImagePaths,
     instruction: round.synthesizedPrompt
   };
 }
@@ -634,13 +577,6 @@ function requireArtifactStore(artifacts: RoundArtifactStore | undefined): RoundA
   return artifacts;
 }
 
-function messageCollectionInstructions(): string {
-  return MESSAGE_COLLECTION_INSTRUCTIONS_TEMPLATE
-    .replace("<messageLimit>", String(FEEDBACK_MESSAGE_LIMIT))
-    .replace("<perMessageImageLimit>", String(FEEDBACK_IMAGE_LIMIT_PER_MESSAGE))
-    .replace("<roundImageLimit>", String(FEEDBACK_IMAGE_LIMIT_PER_ROUND));
-}
-
 interface CollectMessagesPayload {
   roundId: string;
   boundaryMessageUrl: string;
@@ -671,35 +607,10 @@ function parseCollectMessagesPayload(payload: unknown): CollectMessagesPayload {
         authorId: requireString(item.authorId, `payload.messages[${index}].authorId`),
         authorName: requireString(item.authorName, `payload.messages[${index}].authorName`),
         timestamp: requireIsoTimestamp(item.timestamp, `payload.messages[${index}].timestamp`),
-        text: requireText(item.text, `payload.messages[${index}].text`),
-        attachments: parseAttachments(item.attachments, index)
+        text: requireText(item.text, `payload.messages[${index}].text`)
       };
     })
   };
-}
-
-function parseAttachments(value: unknown, messageIndex: number) {
-  if (value === undefined) {
-    return [];
-  }
-  if (!Array.isArray(value)) {
-    throw new Error(`payload.messages[${messageIndex}].attachments must be an array.`);
-  }
-  return value.map((attachment, attachmentPosition) => {
-    const item = requireRecord(
-      attachment,
-      `payload.messages[${messageIndex}].attachments[${attachmentPosition}]`
-    );
-    const attachmentIndex = item.attachmentIndex;
-    if (!Number.isInteger(attachmentIndex) || (attachmentIndex as number) < 0) {
-      throw new Error("payload attachmentIndex must be a non-negative integer.");
-    }
-    return {
-      attachmentIndex: attachmentIndex as number,
-      mediaType: requireString(item.mediaType, "payload attachment mediaType"),
-      imagePath: requireString(item.imagePath, "payload attachment imagePath")
-    };
-  });
 }
 
 async function requireRound(store: RoundStateStore, roundId: string) {

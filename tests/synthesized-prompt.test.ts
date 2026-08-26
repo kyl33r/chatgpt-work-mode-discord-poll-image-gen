@@ -8,17 +8,6 @@ const validPrompt =
   "Preserve unrelated content. Produce exactly one edited image.";
 
 describe("validateSynthesizedPrompt", () => {
-  it("requires the participant-reference instruction when image context exists", () => {
-    const prompt =
-      "Edit the supplied base image using this synthesized participant feedback:\n" +
-      "Participant reference images are supporting visual context for the requested edits; keep the Base Image as the edit target.\n" +
-      "Use the references for style and details.\n" +
-      "Preserve unrelated content. Produce exactly one edited image.";
-    expect(validateSynthesizedPrompt(prompt, true)).toBe(prompt);
-    expect(() => validateSynthesizedPrompt(validPrompt, true)).toThrow(
-      "Synthesized prompt must use the required image-edit framing."
-    );
-  });
   it("accepts one bounded visual-edit prompt with the fixed safety frame", () => {
     expect(validateSynthesizedPrompt(`  ${validPrompt}  `)).toBe(validPrompt);
   });

@@ -19,7 +19,6 @@ import {
   LEGACY_V2_STATE_BACKUP_FILE,
   LEGACY_V3_STATE_BACKUP_FILE,
   LEGACY_V4_ROUND_BACKUP_FILE,
-  LEGACY_V5_ROUND_BACKUP_FILE,
   ROUND_BASE_IMAGE_BASENAME,
   ROUND_MIGRATION_STAGING_DIRECTORY,
   ROUND_MIGRATIONS_DIRECTORY_NAME,
@@ -36,7 +35,7 @@ export interface IsolatedRoundMigrationResult {
   migratedRoundCount: number;
 }
 
-export async function migrateIsolatedRoundCapsulesToV6(
+export async function migrateIsolatedRoundCapsulesV4ToV5(
   roundsRoot: string
 ): Promise<IsolatedRoundMigrationResult> {
   let entries;
@@ -99,25 +98,14 @@ export async function migrateIsolatedRoundCapsulesToV6(
     }
     if (
       !isRecord(parsed) ||
-      (parsed.schemaVersion !== 4 && parsed.schemaVersion !== 5) ||
+      parsed.schemaVersion !== 4 ||
       parsed.id !== entry.name ||
-      (parsed.schemaVersion === 4 && "parentRoundId" in parsed) ||
-      !Array.isArray(parsed.capturedMessages)
+      "parentRoundId" in parsed
     ) {
       throw unsupportedIsolatedState();
     }
-    const legacyVersion = parsed.schemaVersion;
-    const migrated = {
-      ...parsed,
-      schemaVersion: ROUND_SCHEMA_VERSION,
-      capturedMessages: parsed.capturedMessages.map((message) => {
-        if (!isRecord(message) || "contextImages" in message) {
-          throw unsupportedIsolatedState();
-        }
-        return { ...message, contextImages: [] };
-      })
-    } as unknown as RoundState;
-    const validationRoot = join(dirname(roundsRoot), `.round-v6-validation-${Date.now()}`);
+    const migrated = { ...parsed, schemaVersion: ROUND_SCHEMA_VERSION } as RoundState;
+    const validationRoot = join(dirname(roundsRoot), `.round-v5-validation-${Date.now()}`);
     try {
       await new JsonRoundStateStore(validationRoot).save(migrated);
     } catch {
@@ -143,10 +131,7 @@ export async function migrateIsolatedRoundCapsulesToV6(
     ) {
       throw unsupportedIsolatedState();
     }
-    const backupPath = join(
-      migrations,
-      legacyVersion === 4 ? LEGACY_V4_ROUND_BACKUP_FILE : LEGACY_V5_ROUND_BACKUP_FILE
-    );
+    const backupPath = join(migrations, LEGACY_V4_ROUND_BACKUP_FILE);
     await ensureIsolatedMigrationBackup(backupPath, legacyContents);
     const temporaryPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
     const handle = await open(temporaryPath, "wx", 0o600);
@@ -230,7 +215,7 @@ export interface RoundStateMigrationResult {
 export async function migrateRoundState(
   paths: SharedStateMigrationPaths
 ): Promise<RoundStateMigrationResult> {
-  const isolated = await migrateIsolatedRoundCapsulesToV6(paths.roundsRoot);
+  const isolated = await migrateIsolatedRoundCapsulesV4ToV5(paths.roundsRoot);
   if (!(await pathExists(paths.legacyStatePath))) {
     return { isolated };
   }
@@ -470,8 +455,7 @@ function parseCapturedMessage(value: unknown): CapturedMessage {
     authorId: value.authorId as string,
     authorName: value.authorName as string,
     timestamp: value.timestamp as string,
-    text: value.text as string,
-    contextImages: []
+    text: value.text as string
   };
 }
 
@@ -514,7 +498,7 @@ function unsupportedSharedState(): Error {
 
 function unsupportedIsolatedState(): Error {
   return new Error(
-    "Isolated round state is not a supported schema-four, schema-five, or schema-six capsule."
+    "Isolated round state is not a supported schema-four or schema-five capsule."
   );
 }
 
