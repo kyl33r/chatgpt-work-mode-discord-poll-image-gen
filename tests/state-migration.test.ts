@@ -93,6 +93,37 @@ describe("migrateLegacyState", () => {
     await expect(access(paths.newStatePath)).resolves.toBeUndefined();
   });
 
+  it("recovers an interrupted marked migration before retrying", async () => {
+    const paths = await createMigrationFixture();
+    const partialBaseImagePath = join(paths.newBaseImageRoot, "R001.png");
+    const partialBackupPath = join(paths.migrationRoot, "rounds-v2.json");
+    const transactionPath = join(paths.migrationRoot, "v2-to-v3-transaction");
+    await mkdir(paths.newBaseImageRoot, { recursive: true });
+    await mkdir(paths.migrationRoot, { recursive: true });
+    await writeFile(partialBaseImagePath, "partial", "utf8");
+    await writeFile(partialBackupPath, "partial", "utf8");
+    await writeFile(transactionPath, "in-progress\n", "utf8");
+
+    await expect(migrateLegacyState(paths)).resolves.toMatchObject({ migrated: true });
+    expect(await readFile(partialBaseImagePath, "utf8")).toBe("base image");
+    expect(await readFile(partialBackupPath, "utf8")).toContain('"schemaVersion": 2');
+    await expect(access(transactionPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("recognizes a marked migration whose state commit completed", async () => {
+    const paths = await createMigrationFixture();
+    await migrateLegacyState(paths);
+    const transactionPath = join(paths.migrationRoot, "v2-to-v3-transaction");
+    await writeFile(transactionPath, "in-progress\n", "utf8");
+
+    await expect(migrateLegacyState(paths)).resolves.toEqual({
+      migrated: true,
+      roundId: "R001",
+      phase: "synthesizing-feedback"
+    });
+    await expect(access(transactionPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("removes staged output when commit preparation fails", async () => {
     const paths = await createMigrationFixture();
     const stateRoot = join(paths.newStatePath, "..");

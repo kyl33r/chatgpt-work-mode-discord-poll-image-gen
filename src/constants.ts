@@ -11,6 +11,8 @@ export const ROUND_STATE_PATH = join(STATE_ROOT, "rounds.json");
 export const BASE_IMAGE_STAGING_ROOT = join(STATE_ROOT, "base-images");
 export const RESULT_IMAGE_STAGING_ROOT = join(STATE_ROOT, "results");
 export const STATE_MIGRATION_ROOT = join(STATE_ROOT, "migrations");
+export const STATE_MIGRATION_TRANSACTION_FILE = "v2-to-v3-transaction";
+export const LEGACY_STATE_BACKUP_FILE = "rounds-v2.json";
 export const LEGACY_ROUND_STATE_PATH = join(".runtime", "rounds.json");
 export const LEGACY_BASE_IMAGE_STAGING_ROOT = join(".runtime", "base-images");
 export const RESULT_MARKER_TEMPLATE = "===== RESULT: <id> =====";

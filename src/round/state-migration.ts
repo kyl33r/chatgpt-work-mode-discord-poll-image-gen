@@ -1,10 +1,12 @@
 import { constants as fsConstants } from "node:fs";
-import { access, copyFile, mkdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
+import { access, copyFile, mkdir, open, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   FEEDBACK_MESSAGE_LIMIT,
+  LEGACY_STATE_BACKUP_FILE,
   ROUND_SCHEMA_VERSION,
+  STATE_MIGRATION_TRANSACTION_FILE,
   SUPPORTED_IMAGE_EXTENSIONS
 } from "../constants.js";
 import type { CapturedMessage } from "./message-collector.js";
@@ -41,10 +43,6 @@ export async function migrateLegacyState(
   paths: StateMigrationPaths
 ): Promise<StateMigrationResult> {
   const stateRoot = dirname(resolve(paths.newStatePath));
-  if (await pathExists(paths.newStatePath)) {
-    throw new Error("Durable round state already exists; migration was not run.");
-  }
-
   const legacyContents = await readFile(paths.legacyStatePath, "utf8");
   const legacyRound = parseSupportedLegacyRound(legacyContents);
   const legacyBaseImagePath = await requireContainedLegacyImage(
@@ -56,14 +54,31 @@ export async function migrateLegacyState(
   const migrationRootRelativePath = requireContainedDestination(paths.migrationRoot, stateRoot);
   const resultImageName = `${legacyRound.id}${extname(legacyBaseImagePath).toLowerCase()}`;
   const newBaseImagePath = resolve(paths.newBaseImageRoot, resultImageName);
-  const newMigrationBackupPath = resolve(paths.migrationRoot, "rounds-v2.json");
+  const newMigrationBackupPath = resolve(paths.migrationRoot, LEGACY_STATE_BACKUP_FILE);
+  const transactionPath = resolve(
+    paths.migrationRoot,
+    STATE_MIGRATION_TRANSACTION_FILE
+  );
+  const temporaryRoot = join(dirname(stateRoot), `.${basename(stateRoot)}.migration-v2`);
+  if (
+    await recoverInterruptedMigration({
+      transactionPath,
+      newStatePath: paths.newStatePath,
+      newBaseImagePath,
+      newMigrationBackupPath,
+      temporaryRoot,
+      expectedRoundId: legacyRound.id
+    })
+  ) {
+    return { migrated: true, roundId: legacyRound.id, phase: "synthesizing-feedback" };
+  }
+  if (await pathExists(paths.newStatePath)) {
+    throw new Error("Durable round state already exists; migration was not run.");
+  }
   if (await pathExists(newBaseImagePath) || await pathExists(newMigrationBackupPath)) {
     throw new Error("A durable migration artifact already exists; migration was not run.");
   }
-  const temporaryRoot = join(
-    dirname(stateRoot),
-    `.${basename(stateRoot)}.migration-${process.pid}-${Date.now()}`
-  );
+  await rm(temporaryRoot, { recursive: true, force: true });
 
   const migratedRound: RoundState = {
     schemaVersion: ROUND_SCHEMA_VERSION,
@@ -77,11 +92,15 @@ export async function migrateLegacyState(
     capturedMessages: legacyRound.capturedMessages
   };
   const committedArtifacts: string[] = [];
+  let transactionCreated = false;
   try {
     const stagedBaseRoot = join(temporaryRoot, baseRootRelativePath);
     const stagedMigrationRoot = join(temporaryRoot, migrationRootRelativePath);
     const stagedBaseImagePath = join(stagedBaseRoot, resultImageName);
-    const stagedMigrationBackupPath = join(stagedMigrationRoot, "rounds-v2.json");
+    const stagedMigrationBackupPath = join(
+      stagedMigrationRoot,
+      LEGACY_STATE_BACKUP_FILE
+    );
     const stagedStatePath = join(temporaryRoot, stateRelativePath);
     await mkdir(stagedBaseRoot, { recursive: true });
     await mkdir(stagedMigrationRoot, { recursive: true });
@@ -99,18 +118,72 @@ export async function migrateLegacyState(
 
     await mkdir(paths.newBaseImageRoot, { recursive: true });
     await mkdir(paths.migrationRoot, { recursive: true });
+    await createTransactionMarker(transactionPath);
+    transactionCreated = true;
     await rename(stagedBaseImagePath, newBaseImagePath);
     committedArtifacts.push(newBaseImagePath);
     await rename(stagedMigrationBackupPath, newMigrationBackupPath);
     committedArtifacts.push(newMigrationBackupPath);
     await rename(stagedStatePath, paths.newStatePath);
+    await rm(transactionPath, { force: true }).catch(() => undefined);
+    transactionCreated = false;
   } catch (error) {
     await Promise.all(committedArtifacts.map((path) => rm(path, { force: true })));
+    if (transactionCreated) {
+      await rm(transactionPath, { force: true });
+    }
     await rm(temporaryRoot, { recursive: true, force: true });
     throw error;
   }
   await rm(temporaryRoot, { recursive: true, force: true });
   return { migrated: true, roundId: migratedRound.id, phase: "synthesizing-feedback" };
+}
+
+interface InterruptedMigrationPaths {
+  transactionPath: string;
+  newStatePath: string;
+  newBaseImagePath: string;
+  newMigrationBackupPath: string;
+  temporaryRoot: string;
+  expectedRoundId: string;
+}
+
+async function recoverInterruptedMigration(
+  paths: InterruptedMigrationPaths
+): Promise<boolean> {
+  if (!(await pathExists(paths.transactionPath))) {
+    return false;
+  }
+  if (await pathExists(paths.newStatePath)) {
+    const round = await new JsonRoundStateStore(paths.newStatePath).get(paths.expectedRoundId);
+    if (
+      !round ||
+      round.phase !== "synthesizing-feedback" ||
+      round.baseImagePath !== paths.newBaseImagePath
+    ) {
+      throw new Error("Interrupted migration requires manual reconciliation.");
+    }
+    await rm(paths.temporaryRoot, { recursive: true, force: true });
+    await rm(paths.transactionPath, { force: true });
+    return true;
+  }
+  await Promise.all([
+    rm(paths.newBaseImagePath, { force: true }),
+    rm(paths.newMigrationBackupPath, { force: true }),
+    rm(paths.temporaryRoot, { recursive: true, force: true })
+  ]);
+  await rm(paths.transactionPath, { force: true });
+  return false;
+}
+
+async function createTransactionMarker(path: string): Promise<void> {
+  const handle = await open(path, "wx");
+  try {
+    await handle.writeFile("in-progress\n", "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 function requireContainedDestination(path: string, root: string): string {
