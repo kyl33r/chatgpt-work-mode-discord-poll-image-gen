@@ -131,7 +131,7 @@ describe("JsonRoundStateStore", () => {
     const directory = await temporaryDirectory();
     const roundsRoot = join(directory, "rounds");
     const store = new JsonRoundStateStore(roundsRoot);
-    const valid = {
+    const valid: RoundState = {
       ...round("RIMAGES"),
       capturedMessages: [{
         messageUrl: "message-1",
@@ -196,6 +196,65 @@ describe("JsonRoundStateStore", () => {
         ]
       })
     ).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+  });
+
+  it("persists only strict, active, bounded capture batches", async () => {
+    const directory = await temporaryDirectory();
+    const store = new JsonRoundStateStore(join(directory, "rounds"));
+    const feedbackCaptureBatch: NonNullable<RoundState["feedbackCaptureBatch"]> = {
+      boundaryMessageUrl: "base-message",
+      messages: [{
+        messageUrl: "message-1",
+        messageOrdinal: 1,
+        selectedAttachments: [
+          { attachmentIndex: 0, mediaType: "image/png", status: "selected" },
+          { attachmentIndex: 2, mediaType: "image/jpeg", status: "accepted", imagePath: "/state/RPLAN/one.png" }
+        ]
+      }, {
+        messageUrl: "message-2",
+        messageOrdinal: 2,
+        selectedAttachments: [{ attachmentIndex: 1, mediaType: "image/webp", status: "copy-intent-recorded", expectedClipboardChangeCount: 9 }]
+      }]
+    };
+    const valid: RoundState = {
+      ...round("RPLAN"),
+      phase: "collecting-messages" as const,
+      baseMessageUrl: "base-message",
+      collectionStartedAt: "2026-08-24T10:00:00.000Z",
+      feedbackCaptureBatch
+    };
+    await expect(store.save(valid)).resolves.toBeUndefined();
+    await expect(store.get("RPLAN")).resolves.toEqual(valid);
+    await expect(store.save({ ...valid, feedbackCaptureBatch: {
+      ...feedbackCaptureBatch,
+      messages: [{ ...feedbackCaptureBatch.messages[0]!, messageOrdinal: 2 }, feedbackCaptureBatch.messages[1]!]
+    } })).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+    await expect(store.save({ ...valid, feedbackCaptureBatch: {
+      ...feedbackCaptureBatch,
+      messages: [{ ...feedbackCaptureBatch.messages[0]!, selectedAttachments: [
+        { attachmentIndex: 0, mediaType: "image/png", status: "selected", imagePath: "/not-allowed" }
+      ] }]
+    } })).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+    await expect(store.save({ ...valid, feedbackCaptureBatch: {
+      ...feedbackCaptureBatch,
+      messages: [{ ...feedbackCaptureBatch.messages[0]!, selectedAttachments: [
+        { attachmentIndex: 0, mediaType: "image/png", status: "copy-intent-recorded", expectedClipboardChangeCount: 1 },
+        { attachmentIndex: 2, mediaType: "image/jpeg", status: "copy-intent-recorded", expectedClipboardChangeCount: 2 }
+      ] }]
+    } })).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+    await expect(store.save({ ...valid, feedbackCaptureBatch: {
+      ...feedbackCaptureBatch,
+      messages: [{ ...feedbackCaptureBatch.messages[0]!, selectedAttachments: [
+        { attachmentIndex: 0, mediaType: "image/gif", status: "selected" }
+      ] }]
+    } } as unknown as RoundState)).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+    await expect(store.save({ ...valid, feedbackCaptureBatch: {
+      ...feedbackCaptureBatch,
+      messages: [{ ...feedbackCaptureBatch.messages[0]!, unexpected: true }]
+    } } as unknown as RoundState)).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+    await expect(store.save({ ...valid, phase: "stopped" as const })).rejects.toThrow(
+      "Unsupported or malformed Round State Capsule."
+    );
   });
 });
 

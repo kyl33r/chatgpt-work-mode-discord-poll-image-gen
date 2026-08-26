@@ -23,6 +23,7 @@ import { resolveDiscordChannel } from "./config/resolve-discord-channel.js";
 import {
   collectMessages,
   MessageCollectionAmbiguityError,
+  planFeedbackCaptures,
   type DiscordMessageObservation
 } from "./round/message-collector.js";
 import { selectContinuationSource } from "./round/continuation.js";
@@ -104,6 +105,9 @@ async function executeLockedCommand(
   }
   if (command === "collect-messages") {
     return collectRoundMessages(payload, store, artifacts);
+  }
+  if (command === "plan-feedback-captures") {
+    return planRoundFeedbackCaptures(payload, store);
   }
   if (command === "prepare-prompt-synthesis") {
     return preparePromptSynthesis(payload, store);
@@ -378,6 +382,77 @@ async function collectRoundMessages(
   };
 }
 
+async function planRoundFeedbackCaptures(payload: unknown, store: RoundStateStore): Promise<unknown> {
+  const input = parsePlanFeedbackCapturesPayload(payload);
+  const round = await requireRound(store, input.roundId);
+  if (
+    round.phase !== "collecting-messages" ||
+    !round.baseMessageUrl ||
+    !round.collectionStartedAt
+  ) {
+    throw new Error(`Round ${round.id} is not collecting messages.`);
+  }
+  if (input.boundaryMessageUrl !== round.baseMessageUrl) {
+    throw new Error("Message observation does not match the active round boundary.");
+  }
+  const planned = planFeedbackCaptures({
+    roundId: round.id,
+    boundaryMessageUrl: round.baseMessageUrl,
+    collectionStartedAt: round.collectionStartedAt,
+    limit: round.messageLimit,
+    existing: round.capturedMessages,
+    observed: input.messages
+  });
+  if (planned.length === 0) {
+    return { action: "wait", selectedCount: 0 };
+  }
+  const feedbackCaptureBatch = {
+    boundaryMessageUrl: round.baseMessageUrl,
+    messages: planned.reduce<Array<{
+      messageUrl: string;
+      messageOrdinal: number;
+      selectedAttachments: Array<{
+        attachmentIndex: number;
+        mediaType: "image/png" | "image/jpeg" | "image/webp";
+        status: "selected";
+      }>;
+    }>>((messages, capture) => {
+      const last = messages.at(-1);
+      if (last && last.messageOrdinal === capture.messageOrdinal) {
+        last.selectedAttachments.push({
+          attachmentIndex: capture.attachmentIndex,
+          mediaType: capture.mediaType,
+          status: "selected"
+        });
+      } else {
+        messages.push({
+          messageUrl: capture.messageUrl,
+          messageOrdinal: capture.messageOrdinal,
+          selectedAttachments: [{
+            attachmentIndex: capture.attachmentIndex,
+            mediaType: capture.mediaType,
+            status: "selected"
+          }]
+        });
+      }
+      return messages;
+    }, [])
+  };
+  if (round.feedbackCaptureBatch && JSON.stringify(round.feedbackCaptureBatch) !== JSON.stringify(feedbackCaptureBatch)) {
+    throw new MessageCollectionAmbiguityError("Feedback capture selection changed after planning.");
+  }
+  if (!round.feedbackCaptureBatch) {
+    await store.save(applyRoundEvent(round, { type: "feedback-captures-planned", feedbackCaptureBatch }));
+  }
+  const first = planned[0]!;
+  return {
+    action: "prepare-feedback-image-capture",
+    messageOrdinal: first.messageOrdinal,
+    attachmentIndex: first.attachmentIndex,
+    selectedCount: planned.length
+  };
+}
+
 async function preparePromptSynthesis(
   payload: unknown,
   store: RoundStateStore
@@ -645,6 +720,64 @@ interface CollectMessagesPayload {
   roundId: string;
   boundaryMessageUrl: string;
   messages: DiscordMessageObservation[];
+}
+
+interface PlanFeedbackCapturesPayload {
+  roundId: string;
+  boundaryMessageUrl: string;
+  messages: DiscordMessageObservation[];
+}
+
+function parsePlanFeedbackCapturesPayload(payload: unknown): PlanFeedbackCapturesPayload {
+  const record = requireRecord(payload, "payload");
+  if (Object.keys(record).some((key) => key !== "roundId" && key !== "boundaryMessageUrl" && key !== "messages")) {
+    throw new Error("payload contains unsupported fields.");
+  }
+  if (!Array.isArray(record.messages)) {
+    throw new Error("payload.messages must be an array.");
+  }
+  return {
+    roundId: requireString(record.roundId, "payload.roundId"),
+    boundaryMessageUrl: requireString(record.boundaryMessageUrl, "payload.boundaryMessageUrl"),
+    messages: record.messages.map((message, index) => parsePlanMessageObservation(message, index))
+  };
+}
+
+function parsePlanMessageObservation(value: unknown, index: number): DiscordMessageObservation {
+  const item = requireRecord(value, `payload.messages[${index}]`);
+  const allowedKeys = new Set([
+    "kind", "roundId", "boundaryMessageUrl", "messageUrl", "authorId", "authorName", "timestamp", "text", "attachments"
+  ]);
+  if (Object.keys(item).some((key) => !allowedKeys.has(key))) {
+    throw new Error("payload message contains unsupported fields.");
+  }
+  if (item.attachments !== undefined && !Array.isArray(item.attachments)) {
+    throw new Error(`payload.messages[${index}].attachments must be an array.`);
+  }
+  return {
+    kind: requireMessageKind(item.kind, `payload.messages[${index}].kind`),
+    roundId: requireString(item.roundId, `payload.messages[${index}].roundId`),
+    boundaryMessageUrl: requireString(item.boundaryMessageUrl, `payload.messages[${index}].boundaryMessageUrl`),
+    messageUrl: requireString(item.messageUrl, `payload.messages[${index}].messageUrl`),
+    authorId: requireString(item.authorId, `payload.messages[${index}].authorId`),
+    authorName: requireString(item.authorName, `payload.messages[${index}].authorName`),
+    timestamp: requireIsoTimestamp(item.timestamp, `payload.messages[${index}].timestamp`),
+    text: requireText(item.text, `payload.messages[${index}].text`),
+    attachments: (item.attachments ?? []).map((attachment, attachmentPosition) => {
+      const parsed = requireRecord(attachment, `payload.messages[${index}].attachments[${attachmentPosition}]`);
+      if (Object.keys(parsed).some((key) => key !== "attachmentIndex" && key !== "mediaType")) {
+        throw new Error("payload attachment contains unsupported fields.");
+      }
+      const attachmentIndex = parsed.attachmentIndex;
+      if (!Number.isInteger(attachmentIndex) || (attachmentIndex as number) < 0) {
+        throw new Error("payload attachmentIndex must be a non-negative integer.");
+      }
+      return {
+        attachmentIndex: attachmentIndex as number,
+        mediaType: requireString(parsed.mediaType, "payload attachment mediaType")
+      };
+    })
+  };
 }
 
 function parseCollectMessagesPayload(payload: unknown): CollectMessagesPayload {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  migrateIsolatedRoundCapsulesToV6,
+  migrateIsolatedRoundCapsulesToV7,
   migrateRoundState,
   migrateSharedRoundState
 } from "../src/round/state-migration.js";
@@ -31,7 +31,7 @@ describe("migrateSharedRoundState", () => {
     const capsule = join(paths.roundsRoot, "R001");
     const migrated = JSON.parse(await readFile(join(capsule, "round.json"), "utf8"));
     expect(migrated).toMatchObject({
-      schemaVersion: 6,
+      schemaVersion: 7,
       id: "R001",
       phase: "synthesizing-feedback",
       messageLimit: 5
@@ -147,8 +147,8 @@ describe("migrateSharedRoundState", () => {
   });
 });
 
-describe("migrateIsolatedRoundCapsulesToV6", () => {
-  it("upgrades v5 captured messages to v6 without changing lineage", async () => {
+describe("migrateIsolatedRoundCapsulesToV7", () => {
+  it("upgrades v5 captured messages to v7 without changing lineage", async () => {
     const root = await mkdtemp(join(tmpdir(), "feedback-round-v6-migration-"));
     temporaryDirectories.push(root);
     const roundsRoot = join(root, "rounds");
@@ -172,13 +172,13 @@ describe("migrateIsolatedRoundCapsulesToV6", () => {
     };
     await writeFile(join(capsule, "round.json"), `${JSON.stringify(legacy, null, 2)}\n`);
 
-    await expect(migrateIsolatedRoundCapsulesToV6(roundsRoot)).resolves.toEqual({
+    await expect(migrateIsolatedRoundCapsulesToV7(roundsRoot)).resolves.toEqual({
       migratedRoundCount: 1
     });
     const migrated = JSON.parse(await readFile(join(capsule, "round.json"), "utf8"));
     expect(migrated).toEqual({
       ...legacy,
-      schemaVersion: 6,
+      schemaVersion: 7,
       capturedMessages: [{ ...legacy.capturedMessages[0], contextImages: [] }]
     });
     await expect(readFile(join(capsule, "migrations", "round-v5.json"), "utf8"))
@@ -202,11 +202,11 @@ describe("migrateIsolatedRoundCapsulesToV6", () => {
     };
     await writeFile(join(capsule, "round.json"), `${JSON.stringify(legacy, null, 2)}\n`);
 
-    await expect(migrateIsolatedRoundCapsulesToV6(roundsRoot)).resolves.toEqual({
+    await expect(migrateIsolatedRoundCapsulesToV7(roundsRoot)).resolves.toEqual({
       migratedRoundCount: 1
     });
     const migrated = JSON.parse(await readFile(join(capsule, "round.json"), "utf8"));
-    expect(migrated).toEqual({ ...legacy, schemaVersion: 6 });
+    expect(migrated).toEqual({ ...legacy, schemaVersion: 7 });
     expect(migrated).not.toHaveProperty("parentRoundId");
     await expect(readFile(join(capsule, "migrations", "round-v4.json"), "utf8"))
       .resolves.toBe(`${JSON.stringify(legacy, null, 2)}\n`);
@@ -240,7 +240,7 @@ describe("migrateIsolatedRoundCapsulesToV6", () => {
         roundsRoot
       })
     ).resolves.toEqual({ isolated: { migratedRoundCount: 1 } });
-    expect(JSON.parse(await readFile(join(capsule, "round.json"), "utf8")).schemaVersion).toBe(6);
+    expect(JSON.parse(await readFile(join(capsule, "round.json"), "utf8")).schemaVersion).toBe(7);
   });
 
   it("rejects malformed current-version state instead of skipping validation", async () => {
@@ -250,11 +250,11 @@ describe("migrateIsolatedRoundCapsulesToV6", () => {
     await mkdir(capsule, { recursive: true });
     await writeFile(
       join(capsule, "round.json"),
-      JSON.stringify({ schemaVersion: 6, id: "R001", unexpected: true })
+      JSON.stringify({ schemaVersion: 7, id: "R001", unexpected: true })
     );
 
-    await expect(migrateIsolatedRoundCapsulesToV6(join(root, "rounds"))).rejects.toThrow(
-      "Isolated round state is not a supported schema-four, schema-five, or schema-six capsule."
+    await expect(migrateIsolatedRoundCapsulesToV7(join(root, "rounds"))).rejects.toThrow(
+      "Isolated round state is not a supported schema-four, schema-five, schema-six, or schema-seven capsule."
     );
   });
 
@@ -280,8 +280,8 @@ describe("migrateIsolatedRoundCapsulesToV6", () => {
     );
     await symlink(outside, join(capsule, "migrations"));
 
-    await expect(migrateIsolatedRoundCapsulesToV6(roundsRoot)).rejects.toThrow(
-      "Isolated round state is not a supported schema-four, schema-five, or schema-six capsule."
+    await expect(migrateIsolatedRoundCapsulesToV7(roundsRoot)).rejects.toThrow(
+      "Isolated round state is not a supported schema-four, schema-five, schema-six, or schema-seven capsule."
     );
     await expect(access(join(outside, "round-v4.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -305,10 +305,34 @@ describe("migrateIsolatedRoundCapsulesToV6", () => {
     await writeFile(join(capsule, "round.json"), legacyContents);
     await writeFile(join(migrations, "round-v4.json"), legacyContents);
 
-    await expect(migrateIsolatedRoundCapsulesToV6(roundsRoot)).resolves.toEqual({
+    await expect(migrateIsolatedRoundCapsulesToV7(roundsRoot)).resolves.toEqual({
       migratedRoundCount: 1
     });
-    expect(JSON.parse(await readFile(join(capsule, "round.json"), "utf8")).schemaVersion).toBe(6);
+    expect(JSON.parse(await readFile(join(capsule, "round.json"), "utf8")).schemaVersion).toBe(7);
+  });
+
+  it("upgrades a v6 round without inventing a capture batch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "feedback-round-v7-migration-"));
+    temporaryDirectories.push(root);
+    const roundsRoot = join(root, "rounds");
+    const capsule = join(roundsRoot, "R006");
+    await mkdir(capsule, { recursive: true });
+    const legacy = {
+      schemaVersion: 6,
+      id: "R006",
+      phase: "stopped",
+      baseImagePath: join(capsule, "base-image.png"),
+      channelUrl: "https://discord.test/channels/one",
+      messageLimit: 5,
+      capturedMessages: []
+    };
+    await writeFile(join(capsule, "round.json"), `${JSON.stringify(legacy)}\n`);
+
+    await expect(migrateIsolatedRoundCapsulesToV7(roundsRoot)).resolves.toEqual({ migratedRoundCount: 1 });
+    expect(JSON.parse(await readFile(join(capsule, "round.json"), "utf8"))).toEqual({
+      ...legacy,
+      schemaVersion: 7
+    });
   });
 });
 

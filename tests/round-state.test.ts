@@ -1,8 +1,41 @@
 import { describe, expect, it } from "vitest";
 
+import { ROUND_SCHEMA_VERSION } from "../src/constants.js";
 import { applyRoundEvent, createRound } from "../src/round/round-state.js";
 
 describe("round state", () => {
+  it("records an optional selected capture batch only while collecting messages", () => {
+    let round = createRound({
+      id: "RPLAN",
+      baseImagePath: "/tmp/base.png",
+      channelUrl: "https://discord.test/channels/one",
+      messageLimit: 5
+    });
+    round = applyRoundEvent(round, { type: "base-submission-started" });
+    round = applyRoundEvent(round, {
+      type: "base-submission-confirmed",
+      baseMessageUrl: "base-message",
+      collectionStartedAt: "2026-08-24T10:00:00.000Z"
+    });
+
+    expect(ROUND_SCHEMA_VERSION).toBe(7);
+    expect(applyRoundEvent(round, {
+      type: "feedback-captures-planned",
+      feedbackCaptureBatch: {
+        boundaryMessageUrl: "base-message",
+        messages: [{
+          messageUrl: "message-1",
+          messageOrdinal: 1,
+          selectedAttachments: [{
+            attachmentIndex: 0,
+            mediaType: "image/png",
+            status: "selected"
+          }]
+        }]
+      }
+    })).toMatchObject({ feedbackCaptureBatch: { messages: [{ messageOrdinal: 1 }] } });
+  });
+
   it("moves a five-message round through one successful Discord outcome", () => {
     let round = createRound({
       id: "R001",
@@ -102,7 +135,7 @@ describe("round state", () => {
         parentRoundId: "RPARENT"
       })
     ).toMatchObject({
-      schemaVersion: 6,
+      schemaVersion: 7,
       id: "RCHILD",
       parentRoundId: "RPARENT"
     });

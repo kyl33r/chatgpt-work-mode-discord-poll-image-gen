@@ -143,6 +143,7 @@ const ROUND_KEYS = new Set([
   "baseMessageUrl",
   "collectionStartedAt",
   "capturedMessages",
+  "feedbackCaptureBatch",
   "synthesizedPrompt",
   "closedMessageUrl",
   "generationOutcome",
@@ -178,11 +179,106 @@ function isRoundState(value: unknown, expectedRoundId: string): value is RoundSt
     !isOptionalString(value.closedMessageUrl) ||
     !isOptionalString(value.outcomeMessageUrl) ||
     !isOptionalString(value.attentionReason) ||
-    !isGenerationOutcome(value.generationOutcome)
+    !isGenerationOutcome(value.generationOutcome) ||
+    !isFeedbackCaptureBatch(
+      value.feedbackCaptureBatch,
+      value.phase,
+      value.baseMessageUrl,
+      value.messageLimit,
+      value.capturedMessages
+    )
   ) {
     return false;
   }
   return true;
+}
+
+function isFeedbackCaptureBatch(
+  value: unknown,
+  phase: unknown,
+  baseMessageUrl: unknown,
+  messageLimit: unknown,
+  capturedMessages: unknown[]
+): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  if (
+    phase !== "collecting-messages" ||
+    typeof baseMessageUrl !== "string" ||
+    !Number.isInteger(messageLimit) ||
+    !isRecord(value) ||
+    Object.keys(value).length !== 2 ||
+    typeof value.boundaryMessageUrl !== "string" ||
+    value.boundaryMessageUrl !== baseMessageUrl ||
+    !Array.isArray(value.messages) ||
+    value.messages.length === 0
+  ) {
+    return false;
+  }
+  const messageUrls = new Set<string>();
+  const capturedUrls = new Set(
+    capturedMessages.map((message) => (message as { messageUrl: string }).messageUrl)
+  );
+  let previousOrdinal = 0;
+  let selectedCount = capturedMessages.reduce<number>(
+    (total, message) => total + (message as { contextImages: unknown[] }).contextImages.length,
+    0
+  );
+  let inProgressCount: number = 0;
+  for (const message of value.messages) {
+    if (
+      !isRecord(message) ||
+      Object.keys(message).length !== 3 ||
+      typeof message.messageUrl !== "string" ||
+      message.messageUrl.length === 0 ||
+      messageUrls.has(message.messageUrl) ||
+      !Number.isInteger(message.messageOrdinal) ||
+      (message.messageOrdinal as number) <= previousOrdinal ||
+      (message.messageOrdinal as number) <= capturedMessages.length ||
+      (message.messageOrdinal as number) > (messageLimit as number) ||
+      capturedUrls.has(message.messageUrl) ||
+      !Array.isArray(message.selectedAttachments) ||
+      message.selectedAttachments.length === 0 ||
+      message.selectedAttachments.length > FEEDBACK_IMAGE_LIMIT_PER_MESSAGE
+    ) {
+      return false;
+    }
+    messageUrls.add(message.messageUrl);
+    previousOrdinal = message.messageOrdinal as number;
+    let previousAttachmentIndex = -1;
+    for (const attachment of message.selectedAttachments) {
+      if (!isFeedbackCaptureAttachment(attachment) || attachment.attachmentIndex <= previousAttachmentIndex) {
+        return false;
+      }
+      previousAttachmentIndex = attachment.attachmentIndex;
+      selectedCount += 1;
+      if (attachment.status === "copy-intent-recorded") {
+        inProgressCount += 1;
+      }
+    }
+  }
+  return selectedCount <= FEEDBACK_IMAGE_LIMIT_PER_ROUND && inProgressCount <= 1;
+}
+
+function isFeedbackCaptureAttachment(value: unknown): value is {
+  attachmentIndex: number;
+  mediaType: string;
+  status: string;
+} {
+  if (!isRecord(value) || !Number.isInteger(value.attachmentIndex) || (value.attachmentIndex as number) < 0) {
+    return false;
+  }
+  if (value.mediaType !== "image/png" && value.mediaType !== "image/jpeg" && value.mediaType !== "image/webp") {
+    return false;
+  }
+  if (value.status === "selected") {
+    return Object.keys(value).length === 3;
+  }
+  if (value.status === "copy-intent-recorded") {
+    return Object.keys(value).length === 4 && Number.isInteger(value.expectedClipboardChangeCount) && (value.expectedClipboardChangeCount as number) >= 0;
+  }
+  return value.status === "accepted" && Object.keys(value).length === 4 && typeof value.imagePath === "string" && value.imagePath.length > 0;
 }
 
 function hasStableCapturedMessageOrder(messages: unknown[]): boolean {

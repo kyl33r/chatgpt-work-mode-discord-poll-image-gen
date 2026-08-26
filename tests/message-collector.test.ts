@@ -1,8 +1,39 @@
 import { describe, expect, it } from "vitest";
 
-import { collectMessages } from "../src/round/message-collector.js";
+import { collectMessages, planFeedbackCaptures } from "../src/round/message-collector.js";
 
 describe("collectMessages", () => {
+  it("plans only remaining participant images from the first five qualifying messages", () => {
+    const result = planFeedbackCaptures({
+      roundId: "R001",
+      boundaryMessageUrl: "boundary",
+      collectionStartedAt: "2026-08-24T10:00:00.000Z",
+      limit: 5,
+      existing: [
+        {
+          ...captured("1", "alice", "first", "10:01"),
+          contextImages: [contextImage(0, "already-accepted.png"), contextImage(2, "also-accepted.jpg")]
+        },
+        captured("2", "alice", "second", "10:02")
+      ],
+      observed: [
+        { ...message("attachment-only", "bob", "", "10:03"), kind: "attachment-only" },
+        withAttachments(message("3", "alice", "third", "10:04"), [
+          unsupported(0), image(1, "3-a.png"), image(2, "3-b.webp"), image(3, "3-c.jpg")
+        ]),
+        withAttachments(message("4", "carol", "fourth", "10:05"), [image(0, "4-a.png"), image(1, "4-b.jpg")]),
+        withAttachments(message("5", "dave", "fifth", "10:06"), [image(0, "5-a.webp")]),
+        withAttachments(message("6", "eve", "after the limit", "10:07"), [image(0, "6-a.png")])
+      ]
+    });
+
+    expect(result).toEqual([
+      { messageUrl: "3", messageOrdinal: 3, attachmentIndex: 1, mediaType: "image/png" },
+      { messageUrl: "3", messageOrdinal: 3, attachmentIndex: 2, mediaType: "image/webp" },
+      { messageUrl: "4", messageOrdinal: 4, attachmentIndex: 0, mediaType: "image/png" }
+    ]);
+  });
+
   it("selects participant images in message and attachment order within both limits", () => {
     const result = collectMessages({
       roundId: "R001",

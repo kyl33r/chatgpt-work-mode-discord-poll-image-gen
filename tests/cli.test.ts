@@ -406,6 +406,104 @@ describe("executeCommand", () => {
     ).toEqual({ action: "recorded", roundId: "R001", phase: "ready-to-generate" });
   });
 
+  it("persists a bounded capture batch and exposes only controlled capture coordinates", async () => {
+    const store = await createStore();
+    await store.save(collectingRound("RPLAN"));
+    const observations = [1, 2].map((index) => ({
+      ...observation(index),
+      roundId: "RPLAN",
+      attachments: [{ attachmentIndex: 0, mediaType: "image/png" }]
+    }));
+
+    const result = await runCommand(
+      "plan-feedback-captures",
+      { roundId: "RPLAN", boundaryMessageUrl: "base-message", messages: observations },
+      store
+    );
+    expect(result).toEqual({
+      action: "prepare-feedback-image-capture",
+      messageOrdinal: 1,
+      attachmentIndex: 0,
+      selectedCount: 2
+    });
+    expect(Object.keys(result as Record<string, unknown>).sort()).toEqual([
+      "action",
+      "attachmentIndex",
+      "messageOrdinal",
+      "selectedCount"
+    ]);
+    expect(await store.get("RPLAN")).toMatchObject({
+      feedbackCaptureBatch: {
+        boundaryMessageUrl: "base-message",
+        messages: [{
+          messageOrdinal: 1,
+          selectedAttachments: [{
+            attachmentIndex: 0,
+            mediaType: "image/png",
+            status: "selected"
+          }]
+        }, {
+          messageOrdinal: 2,
+          selectedAttachments: [{
+            attachmentIndex: 0,
+            mediaType: "image/png",
+            status: "selected"
+          }]
+        }]
+      }
+    });
+
+    await expect(runCommand(
+      "plan-feedback-captures",
+      { roundId: "RWRONG", boundaryMessageUrl: "base-message", messages: observations },
+      store
+    )).rejects.toThrow("Round not found");
+    await expect(runCommand(
+      "plan-feedback-captures",
+      { roundId: "RPLAN", boundaryMessageUrl: "other-boundary", messages: observations },
+      store
+    )).rejects.toThrow("Message observation does not match the active round boundary.");
+    await expect(runCommand(
+      "plan-feedback-captures",
+      { roundId: "RPLAN", boundaryMessageUrl: "base-message", messages: [...observations].reverse() },
+      store
+    )).rejects.toThrow("Message observations are not in Discord arrival order.");
+    await expect(runCommand(
+      "plan-feedback-captures",
+      {
+        roundId: "RPLAN",
+        boundaryMessageUrl: "base-message",
+        messages: [observations[0], { ...observations[0], timestamp: "2026-08-24T10:03:00.000Z" }]
+      },
+      store
+    )).rejects.toThrow("Message observations contain duplicate identities.");
+    await expect(runCommand(
+      "plan-feedback-captures",
+      {
+        roundId: "RPLAN",
+        boundaryMessageUrl: "base-message",
+        messages: [{ ...observations[0], attachments: [
+          { attachmentIndex: 0, mediaType: "image/png" },
+          { attachmentIndex: 0, mediaType: "image/jpeg" }
+        ] }]
+      },
+      store
+    )).rejects.toThrow("Message attachments are not in Discord attachment order.");
+    await expect(runCommand(
+      "plan-feedback-captures",
+      { roundId: "RPLAN", boundaryMessageUrl: "base-message", messages: [{
+        ...observations[0], attachments: [{ attachmentIndex: 0, mediaType: "image/png", imagePath: "/private/path" }]
+      }] },
+      store
+    )).rejects.toThrow("payload attachment contains unsupported fields");
+    await store.save({ ...collectingRound("RINACTIVE"), phase: "stopped" });
+    await expect(runCommand(
+      "plan-feedback-captures",
+      { roundId: "RINACTIVE", boundaryMessageUrl: "base-message", messages: observations },
+      store
+    )).rejects.toThrow("is not collecting messages");
+  });
+
   it("validates and preserves participant image order through generation", async () => {
     const store = await createStore();
     await store.save(collectingRound("R001"));

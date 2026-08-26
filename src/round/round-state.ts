@@ -20,6 +20,23 @@ export type GenerationOutcome =
   | { kind: "refused" }
   | { kind: "failed" };
 
+export type FeedbackCaptureStatus = "selected" | "copy-intent-recorded" | "accepted";
+
+export interface FeedbackCaptureBatch {
+  boundaryMessageUrl: string;
+  messages: Array<{
+    messageUrl: string;
+    messageOrdinal: number;
+    selectedAttachments: Array<{
+      attachmentIndex: number;
+      mediaType: "image/png" | "image/jpeg" | "image/webp";
+      status: FeedbackCaptureStatus;
+      expectedClipboardChangeCount?: number;
+      imagePath?: string;
+    }>;
+  }>;
+}
+
 export interface RoundState {
   schemaVersion: typeof ROUND_SCHEMA_VERSION;
   id: string;
@@ -31,6 +48,7 @@ export interface RoundState {
   baseMessageUrl?: string;
   collectionStartedAt?: string;
   capturedMessages: CapturedMessage[];
+  feedbackCaptureBatch?: FeedbackCaptureBatch;
   synthesizedPrompt?: string;
   closedMessageUrl?: string;
   generationOutcome?: GenerationOutcome;
@@ -47,6 +65,7 @@ export type RoundEvent =
     }
   | { type: "message-collection-progressed"; capturedMessages: CapturedMessage[] }
   | { type: "message-collection-filled"; capturedMessages: CapturedMessage[] }
+  | { type: "feedback-captures-planned"; feedbackCaptureBatch: FeedbackCaptureBatch }
   | { type: "synthesized-prompt-confirmed"; synthesizedPrompt: string }
   | { type: "collection-closed"; closedMessageUrl: string }
   | { type: "generation-started" }
@@ -115,6 +134,9 @@ export function applyRoundEvent(round: RoundState, event: RoundEvent): RoundStat
       throw new Error("In-progress collection must remain below the configured message limit.");
     }
     return { ...round, capturedMessages: event.capturedMessages };
+  }
+  if (round.phase === "collecting-messages" && event.type === "feedback-captures-planned") {
+    return { ...round, feedbackCaptureBatch: event.feedbackCaptureBatch };
   }
   if (round.phase === "collecting-messages" && event.type === "message-collection-filled") {
     if (event.capturedMessages.length !== round.messageLimit) {
