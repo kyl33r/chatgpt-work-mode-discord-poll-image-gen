@@ -15,6 +15,7 @@ import {
   JsonRoundArtifactStore,
   type RoundArtifactStore
 } from "../src/round/round-artifact-store.js";
+import type { ClipboardImageSource } from "../src/clipboard/clipboard-image-source.js";
 import { applyRoundEvent, createRound } from "../src/round/round-state.js";
 import type { DiscordMessageObservation } from "../src/round/message-collector.js";
 import {
@@ -510,6 +511,77 @@ describe("executeCommand", () => {
     )).rejects.toThrow("is not collecting messages");
   });
 
+  it("coordinates a planned clipboard capture through tuple-only command payloads", async () => {
+    const store = await createStore();
+    const round = applyRoundEvent(collectingRound("RCLIP"), {
+      type: "feedback-captures-planned",
+      feedbackCaptureBatch: {
+        boundaryMessageUrl: "base-message",
+        messages: [{
+          messageUrl: "message-1",
+          messageOrdinal: 1,
+          selectedAttachments: [{ attachmentIndex: 0, mediaType: "image/png", status: "selected" }]
+        }]
+      }
+    });
+    await store.save(round);
+    const clipboard = new FakeClipboard(4, { observedChangeCount: 5, pngBytes: new Uint8Array([1]) });
+    const artifacts = new FakeClipboardArtifacts();
+
+    const prepare = await runCommand(
+      "prepare-feedback-image-capture",
+      { roundId: "RCLIP", messageOrdinal: 1, attachmentIndex: 0 },
+      store,
+      { clipboard, artifacts }
+    );
+    expect(prepare).toEqual({ action: "copy-visible-image" });
+    expect(Object.keys(prepare as Record<string, unknown>)).toEqual(["action"]);
+
+    const capture = await runCommand(
+      "capture-feedback-image",
+      { roundId: "RCLIP", messageOrdinal: 1, attachmentIndex: 0 },
+      store,
+      { clipboard, artifacts }
+    );
+    expect(capture).toEqual({ action: "captured" });
+    expect(Object.keys(capture as Record<string, unknown>)).toEqual(["action"]);
+    expect(artifacts.accepted).toHaveLength(1);
+
+    for (const forbiddenPayload of [
+      { roundId: "RCLIP", messageOrdinal: 1, attachmentIndex: 0, pngBytes: [1] },
+      { roundId: "RCLIP", messageOrdinal: 1, attachmentIndex: 0, imagePath: "candidate-artifact" },
+      { roundId: "RCLIP", messageOrdinal: 1, attachmentIndex: 0, changeCount: 5 },
+      { roundId: "RCLIP", messageOrdinal: 1, attachmentIndex: 0, mediaType: "image/png" },
+      { roundId: "RCLIP", messageOrdinal: 1, attachmentIndex: 0, url: "https://discord.test/private" },
+      { roundId: "RCLIP", messageOrdinal: 1, attachmentIndex: 0, extra: true }
+    ]) {
+      await expect(runCommand("capture-feedback-image", forbiddenPayload, store, { clipboard, artifacts }))
+        .rejects.toThrow("payload contains unsupported fields.");
+    }
+  });
+
+  it("does not read the clipboard for inactive or mismatched feedback capture rounds", async () => {
+    const store = await createStore();
+    await store.save({ ...collectingRound("RSTOP"), phase: "stopped" });
+    const clipboard = new FakeClipboard(4, { observedChangeCount: 5, pngBytes: new Uint8Array([1]) });
+    const artifacts = new FakeClipboardArtifacts();
+
+    await expect(runCommand(
+      "prepare-feedback-image-capture",
+      { roundId: "RSTOP", messageOrdinal: 1, attachmentIndex: 0 },
+      store,
+      { clipboard, artifacts }
+    )).rejects.toThrow("not available");
+    await expect(runCommand(
+      "prepare-feedback-image-capture",
+      { roundId: "RMISSING", messageOrdinal: 1, attachmentIndex: 0 },
+      store,
+      { clipboard, artifacts }
+    )).rejects.toThrow("not found");
+    expect(clipboard.getChangeCountCalls).toBe(0);
+    expect(clipboard.readRequests).toEqual([]);
+  });
+
   it("validates and preserves participant image order through generation", async () => {
     const store = await createStore();
     await store.save(collectingRound("R001"));
@@ -856,7 +928,7 @@ function runCommand(
   command: string,
   payload: unknown,
   store: RoundStateStore,
-  options: { artifacts?: RoundArtifactStore } = {}
+  options: { artifacts?: RoundArtifactStore; clipboard?: ClipboardImageSource } = {}
 ) {
   return executeRoundCommand(command, payload, store, {
     allowlist: {
@@ -866,6 +938,48 @@ function runCommand(
     workflowLock: new InMemoryWorkflowLock(),
     ...options
   });
+}
+
+class FakeClipboard implements ClipboardImageSource {
+  public getChangeCountCalls = 0;
+  public readonly readRequests: number[] = [];
+
+  public constructor(
+    private readonly changeCount: number,
+    private readonly image: { observedChangeCount: number; pngBytes: Uint8Array }
+  ) {}
+
+  public async getChangeCount(): Promise<number> {
+    this.getChangeCountCalls += 1;
+    return this.changeCount;
+  }
+
+  public async readSingleImage(previousChangeCount: number) {
+    this.readRequests.push(previousChangeCount);
+    return this.image;
+  }
+}
+
+class FakeClipboardArtifacts implements RoundArtifactStore {
+  public readonly accepted: Uint8Array[] = [];
+
+  public async acceptFeedbackImageBytes(
+    _roundId: string,
+    _messageOrdinal: number,
+    _attachmentIndex: number,
+    pngBytes: Uint8Array
+  ): Promise<string> {
+    this.accepted.push(pngBytes);
+    return "accepted-artifact";
+  }
+
+  public async acceptBaseImage(): Promise<string> { return ""; }
+  public async acceptResultImage(): Promise<string> { return ""; }
+  public async requireResultImage(): Promise<string> { return ""; }
+  public async acceptFeedbackImage(): Promise<string> { return ""; }
+  public async requireFeedbackImage(): Promise<string> { return ""; }
+  public async copyResultAsBase(): Promise<string> { return ""; }
+  public async discardUnpersistedBase(): Promise<void> {}
 }
 
 function validPng(red = 0): Promise<Buffer> {

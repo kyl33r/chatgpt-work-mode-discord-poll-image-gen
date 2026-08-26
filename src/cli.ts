@@ -20,6 +20,7 @@ import {
 import { JsonDiscordChannelAllowlistStore } from "./config/discord-channel-allowlist.js";
 import type { DiscordChannelAllowlistStore } from "./config/discord-channel-allowlist.js";
 import { resolveDiscordChannel } from "./config/resolve-discord-channel.js";
+import type { ClipboardImageSource } from "./clipboard/clipboard-image-source.js";
 import {
   collectMessages,
   MessageCollectionAmbiguityError,
@@ -27,6 +28,7 @@ import {
   type DiscordMessageObservation
 } from "./round/message-collector.js";
 import { selectContinuationSource } from "./round/continuation.js";
+import { FeedbackImageAcquirer } from "./round/feedback-image-acquirer.js";
 import { createOperationId, planNextAction } from "./round/idempotency.js";
 import {
   JsonRoundArtifactStore,
@@ -48,6 +50,7 @@ import { FileWorkflowLock, type WorkflowLock } from "./workflow-lock.js";
 export interface CommandDependencies {
   allowlist: DiscordChannelAllowlistStore;
   artifacts?: RoundArtifactStore;
+  clipboard?: ClipboardImageSource;
   workflowLock: WorkflowLock;
 }
 
@@ -64,7 +67,8 @@ export async function executeCommand(
       payload,
       store,
       allowedChannelUrl,
-      dependencies.artifacts
+      dependencies.artifacts,
+      dependencies.clipboard
     );
   });
 }
@@ -74,7 +78,8 @@ async function executeLockedCommand(
   payload: unknown,
   store: RoundStateStore,
   allowedChannelUrl: string,
-  artifacts: RoundArtifactStore | undefined
+  artifacts: RoundArtifactStore | undefined,
+  clipboard: ClipboardImageSource | undefined
 ): Promise<unknown> {
   await assertAllowedChannel(command, payload, store, allowedChannelUrl);
   if (command === "prepare-base-submission") {
@@ -108,6 +113,20 @@ async function executeLockedCommand(
   }
   if (command === "plan-feedback-captures") {
     return planRoundFeedbackCaptures(payload, store);
+  }
+  if (command === "prepare-feedback-image-capture") {
+    return new FeedbackImageAcquirer(
+      store,
+      requireClipboardImageSource(clipboard),
+      requireArtifactStore(artifacts)
+    ).prepare(parseFeedbackImageCapturePayload(payload));
+  }
+  if (command === "capture-feedback-image") {
+    return new FeedbackImageAcquirer(
+      store,
+      requireClipboardImageSource(clipboard),
+      requireArtifactStore(artifacts)
+    ).capture(parseFeedbackImageCapturePayload(payload));
   }
   if (command === "prepare-prompt-synthesis") {
     return preparePromptSynthesis(payload, store);
@@ -709,6 +728,15 @@ function requireArtifactStore(artifacts: RoundArtifactStore | undefined): RoundA
   return artifacts;
 }
 
+function requireClipboardImageSource(
+  clipboard: ClipboardImageSource | undefined
+): ClipboardImageSource {
+  if (!clipboard) {
+    throw new Error("A ClipboardImageSource is required for feedback image commands.");
+  }
+  return clipboard;
+}
+
 function messageCollectionInstructions(): string {
   return MESSAGE_COLLECTION_INSTRUCTIONS_TEMPLATE
     .replace("<messageLimit>", String(FEEDBACK_MESSAGE_LIMIT))
@@ -726,6 +754,36 @@ interface PlanFeedbackCapturesPayload {
   roundId: string;
   boundaryMessageUrl: string;
   messages: DiscordMessageObservation[];
+}
+
+interface FeedbackImageCapturePayload {
+  roundId: string;
+  messageOrdinal: number;
+  attachmentIndex: number;
+}
+
+function parseFeedbackImageCapturePayload(payload: unknown): FeedbackImageCapturePayload {
+  const record = requireRecord(payload, "payload");
+  const allowedKeys = new Set(["roundId", "messageOrdinal", "attachmentIndex"]);
+  if (
+    Object.keys(record).length !== allowedKeys.size ||
+    Object.keys(record).some((key) => !allowedKeys.has(key))
+  ) {
+    throw new Error("payload contains unsupported fields.");
+  }
+  const messageOrdinal = record.messageOrdinal;
+  const attachmentIndex = record.attachmentIndex;
+  if (!Number.isInteger(messageOrdinal) || (messageOrdinal as number) <= 0) {
+    throw new Error("payload.messageOrdinal must be a positive integer.");
+  }
+  if (!Number.isInteger(attachmentIndex) || (attachmentIndex as number) < 0) {
+    throw new Error("payload.attachmentIndex must be a non-negative integer.");
+  }
+  return {
+    roundId: requireString(record.roundId, "payload.roundId"),
+    messageOrdinal: messageOrdinal as number,
+    attachmentIndex: attachmentIndex as number
+  };
 }
 
 function parsePlanFeedbackCapturesPayload(payload: unknown): PlanFeedbackCapturesPayload {

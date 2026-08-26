@@ -66,6 +66,18 @@ export type RoundEvent =
   | { type: "message-collection-progressed"; capturedMessages: CapturedMessage[] }
   | { type: "message-collection-filled"; capturedMessages: CapturedMessage[] }
   | { type: "feedback-captures-planned"; feedbackCaptureBatch: FeedbackCaptureBatch }
+  | {
+      type: "feedback-copy-intent-recorded";
+      messageOrdinal: number;
+      attachmentIndex: number;
+      expectedClipboardChangeCount: number;
+    }
+  | {
+      type: "feedback-image-accepted";
+      messageOrdinal: number;
+      attachmentIndex: number;
+      imagePath: string;
+    }
   | { type: "synthesized-prompt-confirmed"; synthesizedPrompt: string }
   | { type: "collection-closed"; closedMessageUrl: string }
   | { type: "generation-started" }
@@ -138,6 +150,28 @@ export function applyRoundEvent(round: RoundState, event: RoundEvent): RoundStat
   if (round.phase === "collecting-messages" && event.type === "feedback-captures-planned") {
     return { ...round, feedbackCaptureBatch: event.feedbackCaptureBatch };
   }
+  if (round.phase === "collecting-messages" && event.type === "feedback-copy-intent-recorded") {
+    return {
+      ...round,
+      feedbackCaptureBatch: updateFeedbackCaptureAttachment(round, event, (attachment) => ({
+        attachmentIndex: attachment.attachmentIndex,
+        mediaType: attachment.mediaType,
+        status: "copy-intent-recorded",
+        expectedClipboardChangeCount: event.expectedClipboardChangeCount
+      }))
+    };
+  }
+  if (round.phase === "collecting-messages" && event.type === "feedback-image-accepted") {
+    return {
+      ...round,
+      feedbackCaptureBatch: updateFeedbackCaptureAttachment(round, event, (attachment) => ({
+        attachmentIndex: attachment.attachmentIndex,
+        mediaType: attachment.mediaType,
+        status: "accepted",
+        imagePath: event.imagePath
+      }))
+    };
+  }
   if (round.phase === "collecting-messages" && event.type === "message-collection-filled") {
     if (event.capturedMessages.length !== round.messageLimit) {
       throw new Error("Filled collection must match the configured message limit.");
@@ -197,4 +231,33 @@ export function applyRoundEvent(round: RoundState, event: RoundEvent): RoundStat
 
 function isTerminal(phase: RoundPhase): boolean {
   return phase === "completed" || phase === "stopped" || phase === "needs-attention";
+}
+
+function updateFeedbackCaptureAttachment(
+  round: RoundState,
+  event: { messageOrdinal: number; attachmentIndex: number },
+  update: (attachment: FeedbackCaptureBatch["messages"][number]["selectedAttachments"][number]) =>
+    FeedbackCaptureBatch["messages"][number]["selectedAttachments"][number]
+): FeedbackCaptureBatch {
+  if (!round.feedbackCaptureBatch) {
+    throw new Error("Feedback image capture batch is missing.");
+  }
+  let found = false;
+  const messages = round.feedbackCaptureBatch.messages.map((message) => ({
+    ...message,
+    selectedAttachments: message.selectedAttachments.map((attachment) => {
+      if (
+        message.messageOrdinal !== event.messageOrdinal ||
+        attachment.attachmentIndex !== event.attachmentIndex
+      ) {
+        return attachment;
+      }
+      found = true;
+      return update(attachment);
+    })
+  }));
+  if (!found) {
+    throw new Error("Feedback image capture attachment is missing.");
+  }
+  return { ...round.feedbackCaptureBatch, messages };
 }
