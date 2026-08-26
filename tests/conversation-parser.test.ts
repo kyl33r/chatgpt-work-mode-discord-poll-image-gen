@@ -78,6 +78,34 @@ describe("parseConversation", () => {
     );
   });
 
+  it.each([
+    ["destination", () => {
+      const request = validParseRequest();
+      const otherDestination = resolveDiscordConversationDestination(
+        "https://discord.com/channels/123456789012345/345678901234567",
+        ["https://discord.com/channels/123456789012345/345678901234567"]
+      );
+      return {
+        ...request,
+        checkpoint: checkpointFrom(parseConversation(request)),
+        observation: { ...request.observation, destination: otherDestination }
+      };
+    }],
+    ["boundary", () => {
+      const request = validParseRequest();
+      return {
+        ...request,
+        checkpoint: checkpointFrom(parseConversation(request)),
+        observation: { ...request.observation, boundary: messageIdentity("discord-message:private-mismatched-boundary") }
+      };
+    }]
+  ])("maps an observation %s mismatch to a checkpoint error when resuming", (_description, createRequest) => {
+    expectControlledCheckpointError(
+      () => parseConversation(createRequest()),
+      "private-mismatched"
+    );
+  });
+
   it("fails closed when a no-boundary checkpoint changes its segment start", () => {
     const segmentStart = messageIdentity("discord-message:segment-start");
     const initial = parseConversation({
@@ -311,6 +339,32 @@ describe("parseConversation", () => {
         ])
       ]),
       "selection:first"
+    );
+  });
+
+  it.each([
+    ["partial", [message("ordinary-text", "First observed message", "discord-message:first", "participant", undefined, [
+      attachment(0, "image/png", "selection:accepted")
+    ])]],
+    ["complete", [
+      message("ordinary-text", "First observed message", "discord-message:first", "participant", undefined, [
+        attachment(0, "image/png", "selection:accepted")
+      ]),
+      message("ordinary-text", "Second observed message", "discord-message:second"),
+      message("ordinary-text", "Third observed message", "discord-message:third")
+    ]]
+  ])("fails closed when a %s checkpoint rescan adds an attachment to an accepted message", (_description, initialMessages) => {
+    const checkpoint = checkpointFrom(parseMessages(initialMessages));
+
+    expectControlledCheckpointError(
+      () => resumeBoundaryCheckpoint(checkpoint, [
+        message("ordinary-text", "First observed message", "discord-message:first", "participant", undefined, [
+          attachment(0, "image/png", "selection:accepted"),
+          attachment(1, "image/png", "private-new-selection")
+        ]),
+        ...initialMessages.slice(1)
+      ]),
+      "private-new-selection"
     );
   });
 

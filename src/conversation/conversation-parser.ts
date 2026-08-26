@@ -140,7 +140,12 @@ export function parseConversation(request: ConversationParseRequest): Conversati
   try {
     validateRequest(request);
   } catch (error) {
-    if (hasCheckpoint(request) && error instanceof ConversationOrderError) {
+    if (
+      hasCheckpoint(request) &&
+      (error instanceof ConversationDestinationError ||
+        error instanceof ConversationBoundaryError ||
+        error instanceof ConversationOrderError)
+    ) {
       throw new ConversationCheckpointError();
     }
     throw error;
@@ -215,7 +220,7 @@ export function parseConversation(request: ConversationParseRequest): Conversati
     ],
     selectedAttachments: [
       ...request.checkpoint.selectedAttachments,
-      ...snapshot.selectedAttachments.slice(request.checkpoint.selectedAttachments.length)
+      ...newlyAppendedSelections(request.checkpoint, snapshot)
     ],
     complete: snapshot.complete
   };
@@ -250,7 +255,10 @@ function validateCheckpoint(
       ? checkpoint.segmentStart !== snapshot.segmentStart
       : checkpoint.segmentStart !== undefined) ||
     snapshot.messages.length < checkpoint.messages.length ||
-    snapshot.selectedAttachments.length < checkpoint.selectedAttachments.length
+    snapshot.selectedAttachments.length < checkpoint.selectedAttachments.length ||
+    !checkpoint.selectedAttachments.every((selection) =>
+      checkpoint.messages.some((message) => message.identity === selection.owner)
+    )
   ) {
     throw new ConversationCheckpointError();
   }
@@ -261,11 +269,21 @@ function validateCheckpoint(
     }
   }
 
-  for (let index = 0; index < checkpoint.selectedAttachments.length; index += 1) {
-    if (!hasSameAttachmentSelection(checkpoint.selectedAttachments[index]!, snapshot.selectedAttachments[index]!)) {
-      throw new ConversationCheckpointError();
-    }
+  const resumedCheckpointSelections = snapshot.selectedAttachments.filter((selection) =>
+    checkpoint.messages.some((message) => message.identity === selection.owner)
+  );
+  if (!hasSameAttachmentSelections(checkpoint.selectedAttachments, resumedCheckpointSelections)) {
+    throw new ConversationCheckpointError();
   }
+}
+
+function newlyAppendedSelections(
+  checkpoint: ConversationCheckpoint,
+  snapshot: ConversationSnapshot
+): readonly AttachmentSelection[] {
+  return snapshot.selectedAttachments.filter(
+    (selection) => !checkpoint.messages.some((message) => message.identity === selection.owner)
+  );
 }
 
 function isConversationCheckpoint(value: unknown): value is ConversationCheckpoint {
@@ -344,6 +362,15 @@ function hasSameMessage(
     left.author.id === right.author.id &&
     left.author.name === right.author.name &&
     left.timestamp === right.timestamp
+  );
+}
+
+function hasSameAttachmentSelections(
+  left: readonly AttachmentSelection[],
+  right: readonly AttachmentSelection[]
+): boolean {
+  return left.length === right.length && left.every((selection, index) =>
+    hasSameAttachmentSelection(selection, right[index]!)
   );
 }
 
