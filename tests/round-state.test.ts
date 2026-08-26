@@ -91,6 +91,31 @@ describe("round state", () => {
       "Invalid round transition: submitting-base + round-stopped"
     );
   });
+
+  it("records optional parent lineage only for a continued round", () => {
+    expect(
+      createRound({
+        id: "RCHILD",
+        baseImagePath: "/tmp/base.png",
+        channelUrl: "https://discord.test/channels/one",
+        messageLimit: 5,
+        parentRoundId: "RPARENT"
+      })
+    ).toMatchObject({
+      schemaVersion: 5,
+      id: "RCHILD",
+      parentRoundId: "RPARENT"
+    });
+
+    expect(
+      createRound({
+        id: "ROWNER",
+        baseImagePath: "/tmp/base.png",
+        channelUrl: "https://discord.test/channels/one",
+        messageLimit: 5
+      })
+    ).not.toHaveProperty("parentRoundId");
+  });
 });
 
 function fiveMessages() {

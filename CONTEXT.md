@@ -36,6 +36,14 @@ _Avoid_: Runtime payload, database
 The isolated durable state owned by one Feedback Round. A capsule never shares a mutable JSON record or image artifact with another round.
 _Avoid_: Global round file, shared state bucket
 
+**Continuation Round**:
+A new Feedback Round whose Base Image is a private byte-for-byte copy of the Result Image from the most recently completed successful round in the same allowlisted channel. It records the source as its Parent Round but owns an independent capsule and artifacts.
+_Avoid_: Retry, overwrite, arbitrary branch
+
+**Parent Round**:
+The completed successful Feedback Round from which a Continuation Round copied its Base Image. Lineage is metadata only; the child never reads or uploads the parent's artifact directly after creation.
+_Avoid_: Active round, shared capsule
+
 **Discord Channel Allowlist**:
 The single owner-selected Discord channel URL persisted privately in `.state/discord-channel-allowlist.json` and enforced by every round command.
 _Avoid_: Hardcoded channel, environment channel
