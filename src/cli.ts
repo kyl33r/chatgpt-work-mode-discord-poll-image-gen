@@ -23,6 +23,7 @@ import {
   MessageCollectionAmbiguityError,
   type DiscordMessageObservation
 } from "./round/message-collector.js";
+import { selectContinuationSource } from "./round/continuation.js";
 import { createOperationId, planNextAction } from "./round/idempotency.js";
 import {
   JsonRoundArtifactStore,
@@ -75,6 +76,14 @@ async function executeLockedCommand(
   await assertAllowedChannel(command, payload, store, allowedChannelUrl);
   if (command === "prepare-base-submission") {
     return prepareBaseSubmission(
+      payload,
+      store,
+      requireArtifactStore(artifacts),
+      allowedChannelUrl
+    );
+  }
+  if (command === "prepare-continuation") {
+    return prepareContinuation(
       payload,
       store,
       requireArtifactStore(artifacts),
@@ -151,7 +160,7 @@ async function assertAllowedChannel(
   allowedChannelUrl: string
 ): Promise<void> {
   const record = requireRecord(payload, "payload");
-  if (command === "prepare-base-submission") {
+  if (command === "prepare-base-submission" || command === "prepare-continuation") {
     if ("channelUrl" in record) {
       throw new Error("The round channel is derived from the configured Discord allowlist.");
     }
@@ -161,6 +170,68 @@ async function assertAllowedChannel(
   if (round && round.channelUrl !== allowedChannelUrl) {
     throw new Error("Round channel does not match the configured Discord allowlist.");
   }
+}
+
+async function prepareContinuation(
+  payload: unknown,
+  store: RoundStateStore,
+  artifacts: RoundArtifactStore,
+  allowedChannelUrl: string
+): Promise<unknown> {
+  const record = requireRecord(payload, "payload");
+  if (Object.keys(record).some((key) => key !== "roundId")) {
+    throw new Error("Continuation source is selected from completed channel history.");
+  }
+  const roundId = requireString(record.roundId, "payload.roundId");
+  if (await store.get(roundId)) {
+    throw new Error(`Round already exists: ${roundId}`);
+  }
+  const rounds = await store.list();
+  const activeRound = rounds.find(
+    (round) =>
+      round.phase !== "completed" &&
+      round.phase !== "stopped" &&
+      round.phase !== "needs-attention"
+  );
+  if (activeRound) {
+    throw new Error(`An active round already exists: ${activeRound.id}`);
+  }
+  const source = selectContinuationSource(rounds, allowedChannelUrl);
+  const baseImagePath = await artifacts.copyResultAsBase(
+    source.id,
+    roundId,
+    source.generationOutcome.resultImagePath
+  );
+  const submitting = applyRoundEvent(
+    createRound({
+      id: roundId,
+      baseImagePath,
+      channelUrl: allowedChannelUrl,
+      messageLimit: FEEDBACK_MESSAGE_LIMIT,
+      parentRoundId: source.id
+    }),
+    { type: "base-submission-started" }
+  );
+  await store.save(submitting);
+  return {
+    action: "post-base-image",
+    operationId: createOperationId(
+      roundId,
+      "submitting-base",
+      OPERATION_TURN_NUMBER,
+      submitting.channelUrl
+    ),
+    roundId,
+    baseImagePath: submitting.baseImagePath,
+    channelUrl: submitting.channelUrl,
+    caption: [
+      POLL_START_MARKER_TEMPLATE.replace("<id>", roundId),
+      MESSAGE_COLLECTION_INSTRUCTIONS_TEMPLATE.replace(
+        "<limit>",
+        String(FEEDBACK_MESSAGE_LIMIT)
+      )
+    ].join("\n")
+  };
 }
 
 async function prepareBaseSubmission(
