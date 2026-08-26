@@ -117,6 +117,21 @@ describe("parseConversation", () => {
     );
   });
 
+  it("rejects empty boundary identities supplied by both the request and observation batch", () => {
+    const request = validParseRequest();
+
+    expectControlledParserError(
+      () =>
+        parseConversation({
+          ...request,
+          boundary: messageIdentity(""),
+          observation: { ...request.observation, boundary: messageIdentity("") }
+        }),
+      "private-empty-boundary",
+      "ConversationBoundaryError"
+    );
+  });
+
   it("rejects duplicate message identities without accepting an ambiguous prefix", () => {
     const privateIdentity = "discord-message:private-duplicate";
 

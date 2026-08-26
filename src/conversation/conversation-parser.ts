@@ -207,6 +207,13 @@ function validateRequest(request: unknown): asserts request is ConversationParse
     throw new ConversationBoundaryError();
   }
 
+  if (
+    request.boundary === "" ||
+    request.observation.boundary === ""
+  ) {
+    throw new ConversationBoundaryError();
+  }
+
   if (request.destination !== request.observation.destination) {
     throw new ConversationDestinationError();
   }
