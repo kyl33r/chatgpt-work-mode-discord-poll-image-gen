@@ -41,6 +41,13 @@ describe("collectMessages", () => {
       collectionStartedAt: "2026-08-24T10:00:00.000Z",
       limit: 5,
       existing: [],
+      acceptedFeedbackImages: [
+        accepted("1", 1, 0, "1-a.png"),
+        accepted("1", 1, 1, "1-b.jpg"),
+        accepted("2", 2, 0, "2-a.webp"),
+        accepted("2", 2, 2, "2-b.png"),
+        accepted("3", 3, 0, "3-a.png")
+      ],
       observed: [
         withAttachments(message("1", "alice", "one", "10:01"), [image(0, "1-a.png"), image(1, "1-b.jpg"), image(2, "1-c.webp")]),
         withAttachments(message("2", "bob", "two", "10:02"), [image(0, "2-a.webp"), unsupported(1), image(2, "2-b.png")]),
@@ -262,13 +269,22 @@ function withAttachments<T>(messageValue: T, attachments: unknown[]) {
 }
 
 function image(attachmentIndex: number, imagePath: string) {
-  return { attachmentIndex, mediaType: `image/${imagePath.endsWith(".jpg") ? "jpeg" : imagePath.endsWith(".webp") ? "webp" : "png"}`, imagePath };
+  return { attachmentIndex, mediaType: `image/${imagePath.endsWith(".jpg") ? "jpeg" : imagePath.endsWith(".webp") ? "webp" : "png"}` };
 }
 
 function unsupported(attachmentIndex: number) {
-  return { attachmentIndex, mediaType: "application/pdf", imagePath: "ignored.pdf" };
+  return { attachmentIndex, mediaType: "application/pdf" };
 }
 
 function contextImage(attachmentIndex: number, imagePath: string) {
   return { attachmentIndex, imagePath };
+}
+
+function accepted(
+  messageUrl: string,
+  messageOrdinal: number,
+  attachmentIndex: number,
+  imagePath: string
+) {
+  return { messageUrl, messageOrdinal, attachmentIndex, imagePath };
 }

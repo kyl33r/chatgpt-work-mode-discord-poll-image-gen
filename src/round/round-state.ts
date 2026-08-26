@@ -145,7 +145,9 @@ export function applyRoundEvent(round: RoundState, event: RoundEvent): RoundStat
     if (event.capturedMessages.length >= round.messageLimit) {
       throw new Error("In-progress collection must remain below the configured message limit.");
     }
-    return { ...round, capturedMessages: event.capturedMessages };
+    requireFeedbackCaptureBatchIncorporated(round, event.capturedMessages);
+    const { feedbackCaptureBatch: _completedBatch, ...withoutBatch } = round;
+    return { ...withoutBatch, capturedMessages: event.capturedMessages };
   }
   if (round.phase === "collecting-messages" && event.type === "feedback-captures-planned") {
     return { ...round, feedbackCaptureBatch: event.feedbackCaptureBatch };
@@ -176,8 +178,10 @@ export function applyRoundEvent(round: RoundState, event: RoundEvent): RoundStat
     if (event.capturedMessages.length !== round.messageLimit) {
       throw new Error("Filled collection must match the configured message limit.");
     }
+    requireFeedbackCaptureBatchIncorporated(round, event.capturedMessages);
+    const { feedbackCaptureBatch: _completedBatch, ...withoutBatch } = round;
     return {
-      ...round,
+      ...withoutBatch,
       phase: "synthesizing-feedback",
       capturedMessages: event.capturedMessages
     };
@@ -231,6 +235,34 @@ export function applyRoundEvent(round: RoundState, event: RoundEvent): RoundStat
 
 function isTerminal(phase: RoundPhase): boolean {
   return phase === "completed" || phase === "stopped" || phase === "needs-attention";
+}
+
+function requireFeedbackCaptureBatchIncorporated(
+  round: RoundState,
+  capturedMessages: CapturedMessage[]
+): void {
+  if (!round.feedbackCaptureBatch) {
+    return;
+  }
+  const incorporated = round.feedbackCaptureBatch.messages.every((batchMessage) => {
+    const captured = capturedMessages[batchMessage.messageOrdinal - 1];
+    return (
+      captured?.messageUrl === batchMessage.messageUrl &&
+      captured.contextImages.length === batchMessage.selectedAttachments.length &&
+      batchMessage.selectedAttachments.every((attachment, index) => {
+        const image = captured.contextImages[index];
+        return (
+          attachment.status === "accepted" &&
+          typeof attachment.imagePath === "string" &&
+          image?.attachmentIndex === attachment.attachmentIndex &&
+          image.imagePath === attachment.imagePath
+        );
+      })
+    );
+  });
+  if (!incorporated) {
+    throw new Error("Feedback image capture batch was not incorporated exactly.");
+  }
 }
 
 function updateFeedbackCaptureAttachment(

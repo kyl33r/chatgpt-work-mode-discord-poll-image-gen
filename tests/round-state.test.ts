@@ -36,6 +36,114 @@ describe("round state", () => {
     })).toMatchObject({ feedbackCaptureBatch: { messages: [{ messageOrdinal: 1 }] } });
   });
 
+  it("clears an incorporated capture batch in the collection transition", () => {
+    let round = createRound({
+      id: "RHANDOFF",
+      baseImagePath: "/tmp/base.png",
+      channelUrl: "https://discord.test/channels/one",
+      messageLimit: 5
+    });
+    round = applyRoundEvent(round, { type: "base-submission-started" });
+    round = applyRoundEvent(round, {
+      type: "base-submission-confirmed",
+      baseMessageUrl: "base-message",
+      collectionStartedAt: "2026-08-24T10:00:00.000Z"
+    });
+    round = applyRoundEvent(round, {
+      type: "feedback-captures-planned",
+      feedbackCaptureBatch: {
+        boundaryMessageUrl: "base-message",
+        messages: [{
+          messageUrl: "message-1",
+          messageOrdinal: 1,
+          selectedAttachments: [{
+            attachmentIndex: 0,
+            mediaType: "image/png",
+            status: "accepted",
+            imagePath: "accepted.png"
+          }]
+        }]
+      }
+    });
+
+    round = applyRoundEvent(round, {
+      type: "message-collection-progressed",
+      capturedMessages: [{
+        messageUrl: "message-1",
+        authorId: "alice",
+        authorName: "Alice",
+        timestamp: "2026-08-24T10:01:00.000Z",
+        text: "message 1",
+        contextImages: [{ attachmentIndex: 0, imagePath: "accepted.png" }]
+      }]
+    });
+
+    expect(round).not.toHaveProperty("feedbackCaptureBatch");
+    expect(round.capturedMessages[0]?.contextImages).toEqual([
+      { attachmentIndex: 0, imagePath: "accepted.png" }
+    ]);
+  });
+
+  it("rejects collection transitions that would discard an incomplete or mismatched batch", () => {
+    let round = createRound({
+      id: "RINVALIDHANDOFF",
+      baseImagePath: "/tmp/base.png",
+      channelUrl: "https://discord.test/channels/one",
+      messageLimit: 5
+    });
+    round = applyRoundEvent(round, { type: "base-submission-started" });
+    round = applyRoundEvent(round, {
+      type: "base-submission-confirmed",
+      baseMessageUrl: "base-message",
+      collectionStartedAt: "2026-08-24T10:00:00.000Z"
+    });
+    const incomplete = applyRoundEvent(round, {
+      type: "feedback-captures-planned",
+      feedbackCaptureBatch: {
+        boundaryMessageUrl: "base-message",
+        messages: [{
+          messageUrl: "message-1",
+          messageOrdinal: 1,
+          selectedAttachments: [{ attachmentIndex: 0, mediaType: "image/png", status: "selected" }]
+        }]
+      }
+    });
+    const capturedMessages = [{
+      messageUrl: "message-1",
+      authorId: "alice",
+      authorName: "Alice",
+      timestamp: "2026-08-24T10:01:00.000Z",
+      text: "message 1",
+      contextImages: [{ attachmentIndex: 0, imagePath: "accepted.png" }]
+    }];
+
+    expect(() => applyRoundEvent(incomplete, {
+      type: "message-collection-progressed",
+      capturedMessages
+    })).toThrow("Feedback image capture batch was not incorporated exactly.");
+
+    const mismatched = applyRoundEvent(round, {
+      type: "feedback-captures-planned",
+      feedbackCaptureBatch: {
+        boundaryMessageUrl: "base-message",
+        messages: [{
+          messageUrl: "message-1",
+          messageOrdinal: 1,
+          selectedAttachments: [{
+            attachmentIndex: 0,
+            mediaType: "image/png",
+            status: "accepted",
+            imagePath: "different.png"
+          }]
+        }]
+      }
+    });
+    expect(() => applyRoundEvent(mismatched, {
+      type: "message-collection-progressed",
+      capturedMessages
+    })).toThrow("Feedback image capture batch was not incorporated exactly.");
+  });
+
   it("moves a five-message round through one successful Discord outcome", () => {
     let round = createRound({
       id: "R001",

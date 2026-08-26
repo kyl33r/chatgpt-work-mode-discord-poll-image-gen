@@ -34,12 +34,6 @@ export interface RoundArtifactStore {
   acceptBaseImage(roundId: string, candidatePath: string): Promise<string>;
   acceptResultImage(roundId: string, candidatePath: string): Promise<string>;
   requireResultImage(roundId: string, storedPath: string): Promise<string>;
-  acceptFeedbackImage(
-    roundId: string,
-    messageOrdinal: number,
-    attachmentIndex: number,
-    candidatePath: string
-  ): Promise<string>;
   acceptFeedbackImageBytes(
     roundId: string,
     messageOrdinal: number,
@@ -96,22 +90,6 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
       storedPath,
       "Recorded result image is missing or unsupported."
     );
-  }
-
-  public async acceptFeedbackImage(
-    roundId: string,
-    messageOrdinal: number,
-    attachmentIndex: number,
-    candidatePath: string
-  ): Promise<string> {
-    const accepted = await this.requireValidFeedbackImage(
-      roundId,
-      messageOrdinal,
-      attachmentIndex,
-      candidatePath
-    );
-    await chmod(accepted, 0o600);
-    return accepted;
   }
 
   public async acceptFeedbackImageBytes(

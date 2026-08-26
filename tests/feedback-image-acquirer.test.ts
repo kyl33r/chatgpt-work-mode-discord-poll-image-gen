@@ -232,7 +232,6 @@ class FakeArtifactStore implements RoundArtifactStore {
   public async acceptBaseImage(): Promise<string> { return ""; }
   public async acceptResultImage(): Promise<string> { return ""; }
   public async requireResultImage(): Promise<string> { return ""; }
-  public async acceptFeedbackImage(): Promise<string> { return ""; }
   public async requireFeedbackImage(): Promise<string> { return ""; }
   public async copyResultAsBase(): Promise<string> { return ""; }
   public async discardUnpersistedBase(): Promise<void> {}
@@ -321,7 +320,6 @@ function unusedArtifacts(): RoundArtifactStore {
     acceptBaseImage: async () => "",
     acceptResultImage: async () => "",
     requireResultImage: async () => "",
-    acceptFeedbackImage: async () => "",
     acceptFeedbackImageBytes: async () => "",
     requireFeedbackImage: async () => "",
     copyResultAsBase: async () => "",

@@ -7,7 +7,6 @@ import {
 export interface DiscordAttachmentObservation {
   attachmentIndex: number;
   mediaType: string;
-  imagePath?: string;
 }
 
 export interface DiscordMessageObservation {
@@ -43,6 +42,14 @@ export interface CollectMessagesInput {
   limit: number;
   existing: CapturedMessage[];
   observed: DiscordMessageObservation[];
+  acceptedFeedbackImages?: AcceptedFeedbackImage[];
+}
+
+export interface AcceptedFeedbackImage {
+  messageUrl: string;
+  messageOrdinal: number;
+  attachmentIndex: number;
+  imagePath: string;
 }
 
 export interface CollectionResult {
@@ -125,6 +132,8 @@ export function collectMessages(input: CollectMessagesInput): CollectionResult {
     (total, message) => total + message.contextImages.length,
     0
   );
+  const acceptedFeedbackImages = input.acceptedFeedbackImages ?? [];
+  let acceptedImageIndex = 0;
 
   for (const observation of input.observed) {
     if (captured.length >= input.limit) {
@@ -143,17 +152,28 @@ export function collectMessages(input: CollectMessagesInput): CollectionResult {
         "A rescan discovered a message before the persisted collection boundary."
       );
     }
+    const messageOrdinal = captured.length + 1;
     const contextImages = observation.attachments
       .filter((attachment) =>
         SUPPORTED_IMAGE_MIME_TYPES.some((mediaType) => mediaType === attachment.mediaType)
       )
       .slice(0, FEEDBACK_IMAGE_LIMIT_PER_MESSAGE)
       .slice(0, Math.max(0, FEEDBACK_IMAGE_LIMIT_PER_ROUND - capturedImageCount))
-      .map(({ attachmentIndex, imagePath }) => {
-        if (typeof imagePath !== "string" || imagePath.length === 0) {
-          throw new Error("Selected participant image is missing its staged path.");
+      .map(({ attachmentIndex }) => {
+        const accepted = acceptedFeedbackImages[acceptedImageIndex];
+        if (
+          !accepted ||
+          accepted.messageUrl !== observation.messageUrl ||
+          accepted.messageOrdinal !== messageOrdinal ||
+          accepted.attachmentIndex !== attachmentIndex ||
+          accepted.imagePath.length === 0
+        ) {
+          throw new MessageCollectionAmbiguityError(
+            "Accepted participant images do not match the observed selection."
+          );
         }
-        return { attachmentIndex, imagePath };
+        acceptedImageIndex += 1;
+        return { attachmentIndex, imagePath: accepted.imagePath };
       });
     captured.push({
       messageUrl: observation.messageUrl,
@@ -165,6 +185,12 @@ export function collectMessages(input: CollectMessagesInput): CollectionResult {
     });
     capturedImageCount += contextImages.length;
     capturedUrls.add(observation.messageUrl);
+  }
+
+  if (acceptedImageIndex !== acceptedFeedbackImages.length) {
+    throw new MessageCollectionAmbiguityError(
+      "Accepted participant images do not match the observed selection."
+    );
   }
 
   return { complete: captured.length >= input.limit, captured };

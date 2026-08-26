@@ -230,7 +230,6 @@ describe("executeCommand", () => {
       acceptBaseImage: async () => "unused",
       acceptResultImage: async () => "unused",
       requireResultImage: async () => "unused",
-      acceptFeedbackImage: async () => "unused",
       acceptFeedbackImageBytes: async () => "unused",
       requireFeedbackImage: async () => "unused",
       copyResultAsBase: async () => {
@@ -774,7 +773,7 @@ describe("executeCommand", () => {
 
   it("validates and preserves participant image order through generation", async () => {
     const store = await createStore();
-    await store.save(collectingRound("R001"));
+    let round = collectingRound("R001");
     const roundsRoot = join(temporaryDirectories.at(-1)!, "rounds");
     const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
     await mkdir(feedbackRoot, { recursive: true });
@@ -782,10 +781,31 @@ describe("executeCommand", () => {
     const second = join(feedbackRoot, "message-2-attachment-0.png");
     await writeFile(first, await validPng());
     await writeFile(second, await validPng());
+    const acceptedFirst = await realpath(first);
+    const acceptedSecond = await realpath(second);
     const artifacts = new JsonRoundArtifactStore(roundsRoot);
     const messages = [1, 2, 3, 4, 5].map(observation);
-    messages[0]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png", imagePath: first }];
-    messages[1]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png", imagePath: second }];
+    messages[0]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png" }];
+    messages[1]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png" }];
+    round = applyRoundEvent(round, {
+      type: "feedback-captures-planned",
+      feedbackCaptureBatch: {
+        boundaryMessageUrl: "base-message",
+        messages: [
+          {
+            messageUrl: "message-1",
+            messageOrdinal: 1,
+            selectedAttachments: [{ attachmentIndex: 0, mediaType: "image/png", status: "accepted", imagePath: acceptedFirst }]
+          },
+          {
+            messageUrl: "message-2",
+            messageOrdinal: 2,
+            selectedAttachments: [{ attachmentIndex: 0, mediaType: "image/png", status: "accepted", imagePath: acceptedSecond }]
+          }
+        ]
+      }
+    });
+    await store.save(round);
 
     await runCommand(
       "collect-messages",
@@ -838,6 +858,183 @@ describe("executeCommand", () => {
       phase: "needs-attention",
       attentionReason: "Discord message order is ambiguous; reconcile the round manually."
     });
+  });
+
+  it("fails closed when the persisted collection limit drifts from the product limit", async () => {
+    const store = await createStore();
+    let round = createRound({
+      id: "RLIMIT",
+      baseImagePath: "/tmp/base.png",
+      channelUrl: ALLOWED_CHANNEL,
+      messageLimit: 4
+    });
+    round = applyRoundEvent(round, { type: "base-submission-started" });
+    round = applyRoundEvent(round, {
+      type: "base-submission-confirmed",
+      baseMessageUrl: "base-message",
+      collectionStartedAt: "2026-08-24T10:00:00.000Z"
+    });
+    await store.save(round);
+    const messages = [1, 2, 3, 4].map((index) => ({
+      ...observation(index),
+      roundId: "RLIMIT"
+    }));
+
+    await expect(runCommand(
+      "collect-messages",
+      { roundId: "RLIMIT", boundaryMessageUrl: "base-message", messages },
+      store
+    )).resolves.toEqual({
+      action: "needs-attention",
+      roundId: "RLIMIT",
+      reason: "Feedback collection limits changed; reconcile the Feedback Round manually."
+    });
+    expect(await store.get("RLIMIT")).toMatchObject({
+      phase: "needs-attention",
+      attentionReason: "Feedback collection limits changed; reconcile the Feedback Round manually."
+    });
+  });
+
+  it("never drops an incomplete, invalid, mismatched, duplicated, reordered, or over-limit accepted image", async () => {
+    const observationFor = (
+      roundId: string,
+      index: number,
+      attachments: Array<{ attachmentIndex: number; mediaType: string }> = []
+    ) => ({ ...observation(index), roundId, attachments });
+    const acceptedAttachment = (attachmentIndex: number, imagePath: string) => ({
+      attachmentIndex,
+      mediaType: "image/png" as const,
+      status: "accepted" as const,
+      imagePath
+    });
+    const withBatch = (
+      round: RoundState,
+      messages: NonNullable<RoundState["feedbackCaptureBatch"]>["messages"]
+    ) => applyRoundEvent(round, {
+      type: "feedback-captures-planned",
+      feedbackCaptureBatch: { boundaryMessageUrl: "base-message", messages }
+    });
+    const cases: Array<{
+      name: string;
+      round: RoundState;
+      messages: DiscordMessageObservation[];
+      requireImage?: (
+        roundId: string,
+        messageOrdinal: number,
+        attachmentIndex: number,
+        imagePath: string
+      ) => Promise<string>;
+    }> = [];
+
+    cases.push({
+      name: "incomplete batch",
+      round: withBatch(collectingRound("RINCOMPLETE"), [{
+        messageUrl: "message-1",
+        messageOrdinal: 1,
+        selectedAttachments: [{ attachmentIndex: 0, mediaType: "image/png", status: "selected" }]
+      }]),
+      messages: [1, 2, 3, 4, 5].map((index) =>
+        observationFor("RINCOMPLETE", index, index === 1 ? [{ attachmentIndex: 0, mediaType: "image/png" }] : [])
+      )
+    });
+    cases.push({
+      name: "missing or corrupt artifact",
+      round: withBatch(collectingRound("RINVALID"), [{
+        messageUrl: "message-1",
+        messageOrdinal: 1,
+        selectedAttachments: [acceptedAttachment(0, "artifact-1-0.png")]
+      }]),
+      messages: [1, 2, 3, 4, 5].map((index) =>
+        observationFor("RINVALID", index, index === 1 ? [{ attachmentIndex: 0, mediaType: "image/png" }] : [])
+      ),
+      requireImage: async () => { throw new Error("invalid artifact"); }
+    });
+    cases.push({
+      name: "observation mismatch",
+      round: withBatch(collectingRound("RMISMATCHED"), [{
+        messageUrl: "message-1",
+        messageOrdinal: 1,
+        selectedAttachments: [acceptedAttachment(0, "artifact-1-0.png")]
+      }]),
+      messages: [1, 2, 3, 4, 5].map((index) =>
+        observationFor("RMISMATCHED", index, index === 1 ? [{ attachmentIndex: 1, mediaType: "image/png" }] : [])
+      )
+    });
+    cases.push({
+      name: "duplicate accepted path",
+      round: withBatch(collectingRound("RDUPLICATE"), [1, 2].map((messageOrdinal) => ({
+        messageUrl: `message-${messageOrdinal}`,
+        messageOrdinal,
+        selectedAttachments: [acceptedAttachment(0, `artifact-${messageOrdinal}-0.png`)]
+      }))),
+      messages: [1, 2, 3, 4, 5].map((index) =>
+        observationFor("RDUPLICATE", index, index <= 2 ? [{ attachmentIndex: 0, mediaType: "image/png" }] : [])
+      ),
+      requireImage: async () => "same-artifact.png"
+    });
+    cases.push({
+      name: "reordered accepted paths",
+      round: withBatch(collectingRound("RREORDERED"), [1, 2].map((messageOrdinal) => ({
+        messageUrl: `message-${messageOrdinal}`,
+        messageOrdinal,
+        selectedAttachments: [acceptedAttachment(0, `artifact-${3 - messageOrdinal}-0.png`)]
+      }))),
+      messages: [1, 2, 3, 4, 5].map((index) =>
+        observationFor("RREORDERED", index, index <= 2 ? [{ attachmentIndex: 0, mediaType: "image/png" }] : [])
+      ),
+      requireImage: async (_roundId, messageOrdinal, attachmentIndex, imagePath) => {
+        if (imagePath !== `artifact-${messageOrdinal}-${attachmentIndex}.png`) {
+          throw new Error("artifact tuple mismatch");
+        }
+        return imagePath;
+      }
+    });
+    let overLimit = collectingRound("ROVERLIMIT");
+    overLimit = applyRoundEvent(overLimit, {
+      type: "message-collection-progressed",
+      capturedMessages: [1, 2].map((index) => ({
+        ...captured(index),
+        contextImages: [
+          { attachmentIndex: 0, imagePath: `existing-${index}-0.png` },
+          { attachmentIndex: 1, imagePath: `existing-${index}-1.png` }
+        ]
+      }))
+    });
+    cases.push({
+      name: "cumulative image limit drift",
+      round: withBatch(overLimit, [{
+        messageUrl: "message-3",
+        messageOrdinal: 3,
+        selectedAttachments: [
+          acceptedAttachment(0, "artifact-3-0.png"),
+          acceptedAttachment(1, "artifact-3-1.png")
+        ]
+      }]),
+      messages: [3, 4, 5].map((index) =>
+        observationFor("ROVERLIMIT", index, index === 3
+          ? [{ attachmentIndex: 0, mediaType: "image/png" }, { attachmentIndex: 1, mediaType: "image/png" }]
+          : [])
+      )
+    });
+
+    for (const scenario of cases) {
+      const store = new ThrowingSaveRoundStateStore(scenario.round);
+      const artifacts = feedbackReadArtifacts(scenario.requireImage);
+      await expect(runCommand(
+        "collect-messages",
+        { roundId: scenario.round.id, boundaryMessageUrl: "base-message", messages: scenario.messages },
+        store,
+        { artifacts }
+      ), scenario.name).resolves.toEqual({
+        action: "needs-attention",
+        roundId: scenario.round.id,
+        reason: "A selected participant image is incomplete, invalid, or mismatched."
+      });
+      expect(await store.get(scenario.round.id), scenario.name).toMatchObject({
+        phase: "needs-attention",
+        attentionReason: "A selected participant image is incomplete, invalid, or mismatched."
+      });
+    }
   });
 
   it("prepares one image edit from all five frozen messages", async () => {
@@ -1166,10 +1363,28 @@ class FakeClipboardArtifacts implements RoundArtifactStore {
   public async acceptBaseImage(): Promise<string> { return ""; }
   public async acceptResultImage(): Promise<string> { return ""; }
   public async requireResultImage(): Promise<string> { return ""; }
-  public async acceptFeedbackImage(): Promise<string> { return ""; }
   public async requireFeedbackImage(): Promise<string> { return ""; }
   public async copyResultAsBase(): Promise<string> { return ""; }
   public async discardUnpersistedBase(): Promise<void> {}
+}
+
+function feedbackReadArtifacts(
+  requireImage: (
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    imagePath: string
+  ) => Promise<string> = async (_roundId, _messageOrdinal, _attachmentIndex, imagePath) => imagePath
+): RoundArtifactStore {
+  return {
+    acceptBaseImage: async (_roundId, candidatePath) => candidatePath,
+    acceptResultImage: async (_roundId, candidatePath) => candidatePath,
+    requireResultImage: async (_roundId, storedPath) => storedPath,
+    acceptFeedbackImageBytes: async () => "",
+    requireFeedbackImage: requireImage,
+    copyResultAsBase: async (_sourceRoundId, _targetRoundId, sourcePath) => sourcePath,
+    discardUnpersistedBase: async () => undefined
+  };
 }
 
 class ThrowingSaveRoundStateStore implements RoundStateStore {

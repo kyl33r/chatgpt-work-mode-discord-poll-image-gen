@@ -332,6 +332,92 @@ async function collectRoundMessages(
   if (input.boundaryMessageUrl !== round.baseMessageUrl) {
     throw new Error("Message observation does not match the active round boundary.");
   }
+  if (round.messageLimit !== FEEDBACK_MESSAGE_LIMIT) {
+    const reason = "Feedback collection limits changed; reconcile the Feedback Round manually.";
+    return requireFeedbackCaptureAttention(store, round, reason);
+  }
+  const validatedExistingMessages = round.capturedMessages.map((message) => ({
+    ...message,
+    contextImages: message.contextImages.map((image) => ({ ...image }))
+  }));
+  let acceptedFeedbackImages: Array<{
+    messageUrl: string;
+    messageOrdinal: number;
+    attachmentIndex: number;
+    imagePath: string;
+  }> = [];
+  try {
+    const planned = planFeedbackCaptures({
+      roundId: round.id,
+      boundaryMessageUrl: round.baseMessageUrl,
+      collectionStartedAt: round.collectionStartedAt,
+      limit: round.messageLimit,
+      existing: round.capturedMessages,
+      observed: input.messages
+    });
+    const candidateBatch = feedbackCaptureBatchFromPlan(round.baseMessageUrl, planned);
+    if (planned.length > 0 || round.feedbackCaptureBatch) {
+      if (
+        !round.feedbackCaptureBatch ||
+        !hasSameFeedbackCaptureSelection(round.feedbackCaptureBatch, candidateBatch) ||
+        round.feedbackCaptureBatch.messages.some((message) =>
+          message.selectedAttachments.some((attachment) => attachment.status !== "accepted")
+        )
+      ) {
+        throw new Error("Feedback image capture is incomplete or mismatched.");
+      }
+      acceptedFeedbackImages = round.feedbackCaptureBatch.messages.flatMap((message) =>
+        message.selectedAttachments.map((attachment) => {
+          if (typeof attachment.imagePath !== "string" || attachment.imagePath.length === 0) {
+            throw new Error("Accepted feedback image path is missing.");
+          }
+          return {
+            messageUrl: message.messageUrl,
+            messageOrdinal: message.messageOrdinal,
+            attachmentIndex: attachment.attachmentIndex,
+            imagePath: attachment.imagePath
+          };
+        })
+      );
+    }
+
+    const seenPaths = new Set<string>();
+    for (const [messageIndex, message] of validatedExistingMessages.entries()) {
+      for (const image of message.contextImages) {
+        const validated = await requireArtifactStore(artifacts).requireFeedbackImage(
+          round.id,
+          messageIndex + 1,
+          image.attachmentIndex,
+          image.imagePath
+        );
+        if (seenPaths.has(validated)) {
+          throw new Error("Participant image context contains a duplicate path.");
+        }
+        seenPaths.add(validated);
+        image.imagePath = validated;
+      }
+    }
+    for (const image of acceptedFeedbackImages) {
+      const validated = await requireArtifactStore(artifacts).requireFeedbackImage(
+        round.id,
+        image.messageOrdinal,
+        image.attachmentIndex,
+        image.imagePath
+      );
+      if (seenPaths.has(validated)) {
+        throw new Error("Participant image context contains a duplicate path.");
+      }
+      seenPaths.add(validated);
+      image.imagePath = validated;
+    }
+  } catch (error) {
+    if (error instanceof MessageCollectionAmbiguityError) {
+      const reason = "Discord message order is ambiguous; reconcile the round manually.";
+      return requireFeedbackCaptureAttention(store, round, reason);
+    }
+    const reason = "A selected participant image is incomplete, invalid, or mismatched.";
+    return requireFeedbackCaptureAttention(store, round, reason);
+  }
   let collection;
   try {
     collection = collectMessages({
@@ -339,8 +425,9 @@ async function collectRoundMessages(
       boundaryMessageUrl: round.baseMessageUrl,
       collectionStartedAt: round.collectionStartedAt,
       limit: round.messageLimit,
-      existing: round.capturedMessages,
-      observed: input.messages
+      existing: validatedExistingMessages,
+      observed: input.messages,
+      acceptedFeedbackImages
     });
   } catch (error) {
     if (!(error instanceof MessageCollectionAmbiguityError)) {
@@ -350,30 +437,6 @@ async function collectRoundMessages(
     await store.save(
       applyRoundEvent(round, { type: "attention-required", reason })
     );
-    return { action: "needs-attention", roundId: round.id, reason };
-  }
-  try {
-    const existingUrls = new Set(round.capturedMessages.map((message) => message.messageUrl));
-    for (const [messageIndex, message] of collection.captured.entries()) {
-      for (const image of message.contextImages) {
-        image.imagePath = existingUrls.has(message.messageUrl)
-          ? await requireArtifactStore(artifacts).requireFeedbackImage(
-              round.id,
-              messageIndex + 1,
-              image.attachmentIndex,
-              image.imagePath
-            )
-          : await requireArtifactStore(artifacts).acceptFeedbackImage(
-              round.id,
-              messageIndex + 1,
-              image.attachmentIndex,
-              image.imagePath
-            );
-      }
-    }
-  } catch {
-    const reason = "A selected participant image is missing, invalid, or ambiguously staged.";
-    await store.save(applyRoundEvent(round, { type: "attention-required", reason }));
     return { action: "needs-attention", roundId: round.id, reason };
   }
   if (!collection.complete) {
@@ -423,8 +486,38 @@ async function planRoundFeedbackCaptures(payload: unknown, store: RoundStateStor
     existing: round.capturedMessages,
     observed: input.messages
   });
-  const feedbackCaptureBatch = {
-    boundaryMessageUrl: round.baseMessageUrl,
+  const feedbackCaptureBatch = feedbackCaptureBatchFromPlan(round.baseMessageUrl, planned);
+  if (
+    round.feedbackCaptureBatch &&
+    !hasSameFeedbackCaptureSelection(round.feedbackCaptureBatch, feedbackCaptureBatch)
+  ) {
+    return requireFeedbackCaptureAttention(
+      store,
+      round,
+      "Feedback image selection changed after planning; reconcile the Feedback Round manually."
+    );
+  }
+  if (planned.length === 0) {
+    return { action: "wait", selectedCount: 0 };
+  }
+  if (!round.feedbackCaptureBatch) {
+    await store.save(applyRoundEvent(round, { type: "feedback-captures-planned", feedbackCaptureBatch }));
+  }
+  const first = planned[0]!;
+  return {
+    action: "prepare-feedback-image-capture",
+    messageOrdinal: first.messageOrdinal,
+    attachmentIndex: first.attachmentIndex,
+    selectedCount: planned.length
+  };
+}
+
+function feedbackCaptureBatchFromPlan(
+  boundaryMessageUrl: string,
+  planned: ReturnType<typeof planFeedbackCaptures>
+) {
+  return {
+    boundaryMessageUrl,
     messages: planned.reduce<Array<{
       messageUrl: string;
       messageOrdinal: number;
@@ -454,29 +547,6 @@ async function planRoundFeedbackCaptures(payload: unknown, store: RoundStateStor
       }
       return messages;
     }, [])
-  };
-  if (
-    round.feedbackCaptureBatch &&
-    !hasSameFeedbackCaptureSelection(round.feedbackCaptureBatch, feedbackCaptureBatch)
-  ) {
-    return requireFeedbackCaptureAttention(
-      store,
-      round,
-      "Feedback image selection changed after planning; reconcile the Feedback Round manually."
-    );
-  }
-  if (planned.length === 0) {
-    return { action: "wait", selectedCount: 0 };
-  }
-  if (!round.feedbackCaptureBatch) {
-    await store.save(applyRoundEvent(round, { type: "feedback-captures-planned", feedbackCaptureBatch }));
-  }
-  const first = planned[0]!;
-  return {
-    action: "prepare-feedback-image-capture",
-    messageOrdinal: first.messageOrdinal,
-    attachmentIndex: first.attachmentIndex,
-    selectedCount: planned.length
   };
 }
 
@@ -915,6 +985,9 @@ function parsePlanMessageObservation(value: unknown, index: number): DiscordMess
 
 function parseCollectMessagesPayload(payload: unknown): CollectMessagesPayload {
   const record = requireRecord(payload, "payload");
+  if (Object.keys(record).some((key) => key !== "roundId" && key !== "boundaryMessageUrl" && key !== "messages")) {
+    throw new Error("payload contains unsupported fields.");
+  }
   if (!Array.isArray(record.messages)) {
     throw new Error("payload.messages must be an array.");
   }
@@ -924,48 +997,8 @@ function parseCollectMessagesPayload(payload: unknown): CollectMessagesPayload {
       record.boundaryMessageUrl,
       "payload.boundaryMessageUrl"
     ),
-    messages: record.messages.map((message, index) => {
-      const item = requireRecord(message, `payload.messages[${index}]`);
-      return {
-        kind: requireMessageKind(item.kind, `payload.messages[${index}].kind`),
-        roundId: requireString(item.roundId, `payload.messages[${index}].roundId`),
-        boundaryMessageUrl: requireString(
-          item.boundaryMessageUrl,
-          `payload.messages[${index}].boundaryMessageUrl`
-        ),
-        messageUrl: requireString(item.messageUrl, `payload.messages[${index}].messageUrl`),
-        authorId: requireString(item.authorId, `payload.messages[${index}].authorId`),
-        authorName: requireString(item.authorName, `payload.messages[${index}].authorName`),
-        timestamp: requireIsoTimestamp(item.timestamp, `payload.messages[${index}].timestamp`),
-        text: requireText(item.text, `payload.messages[${index}].text`),
-        attachments: parseAttachments(item.attachments, index)
-      };
-    })
+    messages: record.messages.map((message, index) => parsePlanMessageObservation(message, index))
   };
-}
-
-function parseAttachments(value: unknown, messageIndex: number) {
-  if (value === undefined) {
-    return [];
-  }
-  if (!Array.isArray(value)) {
-    throw new Error(`payload.messages[${messageIndex}].attachments must be an array.`);
-  }
-  return value.map((attachment, attachmentPosition) => {
-    const item = requireRecord(
-      attachment,
-      `payload.messages[${messageIndex}].attachments[${attachmentPosition}]`
-    );
-    const attachmentIndex = item.attachmentIndex;
-    if (!Number.isInteger(attachmentIndex) || (attachmentIndex as number) < 0) {
-      throw new Error("payload attachmentIndex must be a non-negative integer.");
-    }
-    return {
-      attachmentIndex: attachmentIndex as number,
-      mediaType: requireString(item.mediaType, "payload attachment mediaType"),
-      imagePath: requireString(item.imagePath, "payload attachment imagePath")
-    };
-  });
 }
 
 async function requireRound(store: RoundStateStore, roundId: string) {
