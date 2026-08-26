@@ -7,6 +7,7 @@ import {
   ROUND_BASE_IMAGE_BASENAME,
   ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN,
   ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME,
+  ROUND_RESULT_IMAGE_BASENAME,
   SUPPORTED_IMAGE_EXTENSIONS
 } from "../constants.js";
 import { assertSafeRoundId, roundCapsuleDirectory } from "./round-paths.js";
@@ -46,16 +47,18 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     );
   }
 
-  public acceptResultImage(roundId: string, candidatePath: string): Promise<string> {
-    return this.requireCapsuleImage(
+  public async acceptResultImage(roundId: string, candidatePath: string): Promise<string> {
+    const accepted = await this.requireValidResultImage(
       roundId,
       candidatePath,
       "Result image must be staged under the durable state directory."
     );
+    await chmod(accepted, 0o600);
+    return accepted;
   }
 
   public requireResultImage(roundId: string, storedPath: string): Promise<string> {
-    return this.requireCapsuleImage(
+    return this.requireValidResultImage(
       roundId,
       storedPath,
       "Recorded result image is missing or unsupported."
@@ -208,6 +211,25 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
       throw new Error(errorMessage);
     }
     if (!(await isDecodableImageOfExpectedFormat(resolvedPath))) {
+      throw new Error(errorMessage);
+    }
+    return resolvedPath;
+  }
+
+  private async requireValidResultImage(
+    roundId: string,
+    candidatePath: string,
+    errorMessage: string
+  ): Promise<string> {
+    const resolvedPath = await this.requireCapsuleImage(roundId, candidatePath, errorMessage);
+    const resolvedCapsule = await realpath(roundCapsuleDirectory(this.roundsRoot, roundId));
+    const pathFromCapsule = relative(resolvedCapsule, resolvedPath);
+    const expectedName = `${ROUND_RESULT_IMAGE_BASENAME}${extname(resolvedPath).toLowerCase()}`;
+    if (
+      dirname(pathFromCapsule) !== "." ||
+      basename(pathFromCapsule) !== expectedName ||
+      !(await isDecodableImageOfExpectedFormat(resolvedPath))
+    ) {
       throw new Error(errorMessage);
     }
     return resolvedPath;
