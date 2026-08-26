@@ -202,6 +202,49 @@ describe("migrateIsolatedRoundCapsulesV4ToV5", () => {
     ).resolves.toEqual({ isolated: { migratedRoundCount: 1 } });
     expect(JSON.parse(await readFile(join(capsule, "round.json"), "utf8")).schemaVersion).toBe(5);
   });
+
+  it("rejects malformed current-version state instead of skipping validation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "feedback-round-v5-malformed-"));
+    temporaryDirectories.push(root);
+    const capsule = join(root, "rounds", "R001");
+    await mkdir(capsule, { recursive: true });
+    await writeFile(
+      join(capsule, "round.json"),
+      JSON.stringify({ schemaVersion: 5, id: "R001", unexpected: true })
+    );
+
+    await expect(migrateIsolatedRoundCapsulesV4ToV5(join(root, "rounds"))).rejects.toThrow(
+      "Isolated round state is not a supported schema-four or schema-five capsule."
+    );
+  });
+
+  it("rejects a migrations-directory symlink without writing outside the capsule", async () => {
+    const root = await mkdtemp(join(tmpdir(), "feedback-round-v5-migrations-link-"));
+    temporaryDirectories.push(root);
+    const roundsRoot = join(root, "rounds");
+    const capsule = join(roundsRoot, "R001");
+    const outside = join(root, "outside");
+    await mkdir(capsule, { recursive: true });
+    await mkdir(outside);
+    await writeFile(
+      join(capsule, "round.json"),
+      `${JSON.stringify({
+        schemaVersion: 4,
+        id: "R001",
+        phase: "stopped",
+        baseImagePath: join(capsule, "base-image.png"),
+        channelUrl: "https://discord.test/channels/one",
+        messageLimit: 5,
+        capturedMessages: []
+      })}\n`
+    );
+    await symlink(outside, join(capsule, "migrations"));
+
+    await expect(migrateIsolatedRoundCapsulesV4ToV5(roundsRoot)).rejects.toThrow(
+      "Isolated round state is not a supported schema-four or schema-five capsule."
+    );
+    await expect(access(join(outside, "round-v4.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
 
 async function createMigrationFixture(overrides: Record<string, unknown> = {}) {
