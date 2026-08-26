@@ -204,7 +204,7 @@ function isFeedbackCaptureBatch(
     return true;
   }
   if (
-    phase !== "collecting-messages" ||
+    (phase !== "collecting-messages" && phase !== "needs-attention") ||
     typeof baseMessageUrl !== "string" ||
     !Number.isInteger(messageLimit) ||
     !isRecord(value) ||

@@ -57,6 +57,87 @@ describe("FeedbackImageAcquirer", () => {
       }
     });
   });
+
+  it.each([
+    ["unchanged clipboard", new FakeClipboardImageSource(41, { observedChangeCount: 41, pngBytes: new Uint8Array([1]) })],
+    ["over-advanced clipboard", new FakeClipboardImageSource(41, { observedChangeCount: 43, pngBytes: new Uint8Array([1]) })],
+    ["unreadable clipboard", new FakeClipboardImageSource(41, undefined, new Error("private decoder failure"))],
+    ["empty pasteboard", new FakeClipboardImageSource(41, undefined, new Error("zero clipboard image items"))],
+    ["multiple clipboard images", new FakeClipboardImageSource(41, undefined, new Error("multiple clipboard image items"))],
+    ["clipboard adapter failure", new FakeClipboardImageSource(41, undefined, new Error("private adapter failure"))]
+  ])("fails closed for %s without accepting an artifact", async (_scenario, clipboard) => {
+    const store = new InMemoryRoundStateStore(intentRecordedRound("RFAIL"));
+    const artifacts = new FakeArtifactStore("accepted-artifact");
+    const acquirer = new FeedbackImageAcquirer(store, clipboard, artifacts);
+
+    await expect(acquirer.capture({ roundId: "RFAIL", messageOrdinal: 1, attachmentIndex: 0 }))
+      .resolves.toEqual({ action: "needs-attention", reason: "Clipboard image capture is ambiguous; reconcile the Feedback Round manually." });
+    expect(artifacts.accepted).toEqual([]);
+    expect(store.saved.at(-1)).toMatchObject({
+      phase: "needs-attention",
+      attentionReason: "Clipboard image capture is ambiguous; reconcile the Feedback Round manually."
+    });
+    expect(JSON.stringify(store.saved.at(-1))).not.toContain("private decoder failure");
+  });
+
+  it("fails closed when the artifact installation fails without saving an accepted receipt", async () => {
+    const store = new InMemoryRoundStateStore(intentRecordedRound("RARTIFACT"));
+    const artifacts = new FakeArtifactStore("accepted-artifact", new Error("private install failure"));
+    const acquirer = new FeedbackImageAcquirer(
+      store,
+      new FakeClipboardImageSource(41, { observedChangeCount: 42, pngBytes: new Uint8Array([1]) }),
+      artifacts
+    );
+
+    await expect(acquirer.capture({ roundId: "RARTIFACT", messageOrdinal: 1, attachmentIndex: 0 }))
+      .resolves.toEqual({ action: "needs-attention", reason: "Feedback image installation is ambiguous; reconcile the Feedback Round manually." });
+    expect(artifacts.accepted).toEqual([]);
+    expect(store.saved.at(-1)).toMatchObject({
+      phase: "needs-attention",
+      feedbackCaptureBatch: { messages: [{ selectedAttachments: [{ status: "copy-intent-recorded" }] }] }
+    });
+    expect(JSON.stringify(store.saved.at(-1))).not.toContain("private install failure");
+  });
+
+  it("does not touch the clipboard for capture without intent or a non-next tuple", async () => {
+    const clipboard = new FakeClipboardImageSource(41, { observedChangeCount: 42, pngBytes: new Uint8Array([1]) });
+    const store = new InMemoryRoundStateStore(plannedRound("RMISMATCH"));
+    const acquirer = new FeedbackImageAcquirer(store, clipboard, unusedArtifacts());
+
+    await expect(acquirer.capture({ roundId: "RMISMATCH", messageOrdinal: 1, attachmentIndex: 0 }))
+      .resolves.toMatchObject({ action: "needs-attention" });
+    expect(clipboard.readRequests).toEqual([]);
+
+    const nextStore = new InMemoryRoundStateStore(plannedRound("RNEXT"));
+    const nextAcquirer = new FeedbackImageAcquirer(nextStore, clipboard, unusedArtifacts());
+    await expect(nextAcquirer.prepare({ roundId: "RNEXT", messageOrdinal: 2, attachmentIndex: 0 }))
+      .resolves.toMatchObject({ action: "needs-attention" });
+    expect(clipboard.getChangeCountCalls).toBe(0);
+  });
+
+  it("marks an unresolved copy intent as needing attention without another copy preparation", async () => {
+    const clipboard = new FakeClipboardImageSource(41);
+    const store = new InMemoryRoundStateStore(intentRecordedRound("RRESTART"));
+    const acquirer = new FeedbackImageAcquirer(store, clipboard, unusedArtifacts());
+
+    await expect(acquirer.prepare({ roundId: "RRESTART", messageOrdinal: 1, attachmentIndex: 0 }))
+      .resolves.toEqual({ action: "needs-attention", reason: "A feedback image copy may already have occurred; reconcile the Feedback Round manually." });
+    expect(clipboard.getChangeCountCalls).toBe(0);
+  });
+
+  it("reuses an accepted receipt without copying and rejects a duplicate capture", async () => {
+    const clipboard = new FakeClipboardImageSource(41, { observedChangeCount: 42, pngBytes: new Uint8Array([1]) });
+    const artifacts = new FakeArtifactStore("accepted-artifact");
+    const store = new InMemoryRoundStateStore(acceptedRound("RREUSE"));
+    const acquirer = new FeedbackImageAcquirer(store, clipboard, artifacts);
+
+    await expect(acquirer.prepare({ roundId: "RREUSE", messageOrdinal: 1, attachmentIndex: 0 }))
+      .resolves.toEqual({ action: "reuse-accepted-image" });
+    expect(clipboard.getChangeCountCalls).toBe(0);
+    await expect(acquirer.capture({ roundId: "RREUSE", messageOrdinal: 1, attachmentIndex: 0 }))
+      .resolves.toMatchObject({ action: "needs-attention" });
+    expect(clipboard.readRequests).toEqual([]);
+  });
 });
 
 class FakeClipboardImageSource implements ClipboardImageSource {
@@ -65,7 +146,8 @@ class FakeClipboardImageSource implements ClipboardImageSource {
 
   public constructor(
     private readonly changeCount: number,
-    private readonly image = { observedChangeCount: 0, pngBytes: new Uint8Array() }
+    private readonly image: { observedChangeCount: number; pngBytes: Uint8Array } | undefined = { observedChangeCount: 0, pngBytes: new Uint8Array() },
+    private readonly error?: Error
   ) {}
 
   public async getChangeCount(): Promise<number> {
@@ -75,6 +157,12 @@ class FakeClipboardImageSource implements ClipboardImageSource {
 
   public async readSingleImage(previousChangeCount: number): Promise<{ observedChangeCount: number; pngBytes: Uint8Array }> {
     this.readRequests.push(previousChangeCount);
+    if (this.error) {
+      throw this.error;
+    }
+    if (!this.image) {
+      throw new Error("clipboard image unavailable");
+    }
     return this.image;
   }
 }
@@ -87,7 +175,7 @@ class FakeArtifactStore implements RoundArtifactStore {
     pngBytes: Uint8Array;
   }> = [];
 
-  public constructor(private readonly imagePath: string) {}
+  public constructor(private readonly imagePath: string, private readonly error?: Error) {}
 
   public async acceptFeedbackImageBytes(
     roundId: string,
@@ -95,6 +183,9 @@ class FakeArtifactStore implements RoundArtifactStore {
     attachmentIndex: number,
     pngBytes: Uint8Array
   ): Promise<string> {
+    if (this.error) {
+      throw this.error;
+    }
     this.accepted.push({ roundId, messageOrdinal, attachmentIndex, pngBytes });
     return this.imagePath;
   }
@@ -164,6 +255,15 @@ function intentRecordedRound(roundId: string): RoundState {
     messageOrdinal: 1,
     attachmentIndex: 0,
     expectedClipboardChangeCount: 41
+  });
+}
+
+function acceptedRound(roundId: string): RoundState {
+  return applyRoundEvent(intentRecordedRound(roundId), {
+    type: "feedback-image-accepted",
+    messageOrdinal: 1,
+    attachmentIndex: 0,
+    imagePath: "accepted-artifact"
   });
 }
 

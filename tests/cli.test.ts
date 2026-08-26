@@ -456,12 +456,6 @@ describe("executeCommand", () => {
     });
     await expect(runCommand(
       "plan-feedback-captures",
-      { roundId: "RPLAN", boundaryMessageUrl: "base-message", messages: [] },
-      store
-    )).rejects.toThrow("Feedback capture selection changed after planning.");
-
-    await expect(runCommand(
-      "plan-feedback-captures",
       { roundId: "RWRONG", boundaryMessageUrl: "base-message", messages: observations },
       store
     )).rejects.toThrow("Round not found");
@@ -503,6 +497,15 @@ describe("executeCommand", () => {
       }] },
       store
     )).rejects.toThrow("payload attachment contains unsupported fields");
+    await expect(runCommand(
+      "plan-feedback-captures",
+      { roundId: "RPLAN", boundaryMessageUrl: "base-message", messages: [] },
+      store
+    )).resolves.toEqual({
+      action: "needs-attention",
+      roundId: "RPLAN",
+      reason: "Feedback image selection changed after planning; reconcile the Feedback Round manually."
+    });
     await store.save({ ...collectingRound("RINACTIVE"), phase: "stopped" });
     await expect(runCommand(
       "plan-feedback-captures",
@@ -578,6 +581,117 @@ describe("executeCommand", () => {
       store,
       { clipboard, artifacts }
     )).rejects.toThrow("not found");
+    await expect(runCommand(
+      "capture-feedback-image",
+      { roundId: "RSTOP", messageOrdinal: 1, attachmentIndex: 0 },
+      store,
+      { clipboard, artifacts }
+    )).rejects.toThrow("not available");
+    expect(clipboard.getChangeCountCalls).toBe(0);
+    expect(clipboard.readRequests).toEqual([]);
+  });
+
+  it("marks a restart with an unresolved clipboard copy intent as needing attention", async () => {
+    const store = await createStore();
+    let round = applyRoundEvent(collectingRound("RRESTART"), {
+      type: "feedback-captures-planned",
+      feedbackCaptureBatch: {
+        boundaryMessageUrl: "base-message",
+        messages: [{
+          messageUrl: "message-1",
+          messageOrdinal: 1,
+          selectedAttachments: [{ attachmentIndex: 0, mediaType: "image/png", status: "selected" }]
+        }]
+      }
+    });
+    round = applyRoundEvent(round, {
+      type: "feedback-copy-intent-recorded",
+      messageOrdinal: 1,
+      attachmentIndex: 0,
+      expectedClipboardChangeCount: 4
+    });
+    await store.save(round);
+
+    await expect(runCommand("plan-next", { roundId: "RRESTART" }, store)).resolves.toEqual({
+      action: "needs-attention",
+      roundId: "RRESTART",
+      reason: "A feedback image copy may already have occurred; reconcile the Feedback Round manually."
+    });
+    expect(await store.get("RRESTART")).toMatchObject({ phase: "needs-attention" });
+  });
+
+  it("resumes an accepted receipt without another clipboard copy", async () => {
+    const store = await createStore();
+    const observations = [{
+      ...observation(1),
+      roundId: "RRESUME",
+      attachments: [{ attachmentIndex: 0, mediaType: "image/png" }]
+    }];
+    let round = collectingRound("RRESUME");
+    round = applyRoundEvent(round, {
+      type: "feedback-captures-planned",
+      feedbackCaptureBatch: {
+        boundaryMessageUrl: "base-message",
+        messages: [{
+          messageUrl: "message-1",
+          messageOrdinal: 1,
+          selectedAttachments: [{ attachmentIndex: 0, mediaType: "image/png", status: "selected" }]
+        }]
+      }
+    });
+    round = applyRoundEvent(round, {
+      type: "feedback-copy-intent-recorded",
+      messageOrdinal: 1,
+      attachmentIndex: 0,
+      expectedClipboardChangeCount: 4
+    });
+    round = applyRoundEvent(round, {
+      type: "feedback-image-accepted",
+      messageOrdinal: 1,
+      attachmentIndex: 0,
+      imagePath: "accepted-artifact"
+    });
+    await store.save(round);
+    const clipboard = new FakeClipboard(4, { observedChangeCount: 5, pngBytes: new Uint8Array([1]) });
+
+    await expect(runCommand(
+      "plan-feedback-captures",
+      { roundId: "RRESUME", boundaryMessageUrl: "base-message", messages: observations },
+      store
+    )).resolves.toMatchObject({ action: "prepare-feedback-image-capture" });
+    await expect(runCommand(
+      "prepare-feedback-image-capture",
+      { roundId: "RRESUME", messageOrdinal: 1, attachmentIndex: 0 },
+      store,
+      { clipboard, artifacts: new FakeClipboardArtifacts() }
+    )).resolves.toEqual({ action: "reuse-accepted-image" });
+    expect(clipboard.getChangeCountCalls).toBe(0);
+    expect(clipboard.readRequests).toEqual([]);
+  });
+
+  it("rejects a clipboard command for a non-active round before reading the clipboard", async () => {
+    const store = await createStore();
+    for (const roundId of ["RACTIVE", "RWRONG"]) {
+      await store.save(applyRoundEvent(collectingRound(roundId), {
+        type: "feedback-captures-planned",
+        feedbackCaptureBatch: {
+          boundaryMessageUrl: "base-message",
+          messages: [{
+            messageUrl: `message-${roundId}`,
+            messageOrdinal: 1,
+            selectedAttachments: [{ attachmentIndex: 0, mediaType: "image/png", status: "selected" }]
+          }]
+        }
+      }));
+    }
+    const clipboard = new FakeClipboard(4, { observedChangeCount: 5, pngBytes: new Uint8Array([1]) });
+
+    await expect(runCommand(
+      "prepare-feedback-image-capture",
+      { roundId: "RWRONG", messageOrdinal: 1, attachmentIndex: 0 },
+      store,
+      { clipboard, artifacts: new FakeClipboardArtifacts() }
+    )).rejects.toThrow("does not target the active Feedback Round");
     expect(clipboard.getChangeCountCalls).toBe(0);
     expect(clipboard.readRequests).toEqual([]);
   });

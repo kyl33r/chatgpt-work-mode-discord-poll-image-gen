@@ -9,6 +9,21 @@ export interface FeedbackImageCaptureRequest {
   attachmentIndex: number;
 }
 
+type FeedbackImageCaptureResult =
+  | { action: "copy-visible-image" }
+  | { action: "captured" }
+  | { action: "reuse-accepted-image" }
+  | { action: "needs-attention"; reason: string };
+
+const COPY_INTENT_AMBIGUITY_REASON =
+  "A feedback image copy may already have occurred; reconcile the Feedback Round manually.";
+const CLIPBOARD_CAPTURE_AMBIGUITY_REASON =
+  "Clipboard image capture is ambiguous; reconcile the Feedback Round manually.";
+const ARTIFACT_INSTALLATION_AMBIGUITY_REASON =
+  "Feedback image installation is ambiguous; reconcile the Feedback Round manually.";
+const CAPTURE_PROTOCOL_AMBIGUITY_REASON =
+  "Feedback image capture state is ambiguous; reconcile the Feedback Round manually.";
+
 export class FeedbackImageAcquirer {
   public constructor(
     private readonly store: RoundStateStore,
@@ -16,44 +31,92 @@ export class FeedbackImageAcquirer {
     private readonly artifacts: RoundArtifactStore
   ) {}
 
-  public async prepare(request: FeedbackImageCaptureRequest): Promise<{ action: "copy-visible-image" }> {
+  public async prepare(request: FeedbackImageCaptureRequest): Promise<FeedbackImageCaptureResult> {
     const round = await this.requireCollectingRound(request.roundId);
-    const next = findNextAttachment(round.feedbackCaptureBatch!, "selected");
-    requireRequestedTuple(next, request);
+    if (findAttachment(round.feedbackCaptureBatch!, "copy-intent-recorded")) {
+      return this.requireAttention(round, COPY_INTENT_AMBIGUITY_REASON);
+    }
+    const accepted = findRequestedAttachment(round.feedbackCaptureBatch!, request, "accepted");
+    if (accepted) {
+      try {
+        await this.artifacts.requireFeedbackImage(
+          request.roundId,
+          request.messageOrdinal,
+          request.attachmentIndex,
+          accepted.imagePath!
+        );
+      } catch {
+        return this.requireAttention(round, ARTIFACT_INSTALLATION_AMBIGUITY_REASON);
+      }
+      return { action: "reuse-accepted-image" };
+    }
+    const next = findAttachment(round.feedbackCaptureBatch!, "selected");
+    if (!next || !isRequestedTuple(next, request)) {
+      return this.requireAttention(round, CAPTURE_PROTOCOL_AMBIGUITY_REASON);
+    }
 
-    const expectedClipboardChangeCount = await this.clipboard.getChangeCount();
-    await this.store.save(applyRoundEvent(round, {
-      type: "feedback-copy-intent-recorded",
-      ...request,
-      expectedClipboardChangeCount
-    }));
+    let expectedClipboardChangeCount: number;
+    try {
+      expectedClipboardChangeCount = await this.clipboard.getChangeCount();
+    } catch {
+      return this.requireAttention(round, CLIPBOARD_CAPTURE_AMBIGUITY_REASON);
+    }
+    try {
+      await this.store.save(applyRoundEvent(round, {
+        type: "feedback-copy-intent-recorded",
+        ...request,
+        expectedClipboardChangeCount
+      }));
+    } catch {
+      return this.requireAttention(round, COPY_INTENT_AMBIGUITY_REASON);
+    }
     return { action: "copy-visible-image" };
   }
 
-  public async capture(request: FeedbackImageCaptureRequest): Promise<{ action: "captured" }> {
+  public async capture(request: FeedbackImageCaptureRequest): Promise<FeedbackImageCaptureResult> {
     const round = await this.requireCollectingRound(request.roundId);
-    const intent = findNextAttachment(round.feedbackCaptureBatch!, "copy-intent-recorded");
-    requireRequestedTuple(intent, request);
+    const intent = findAttachment(round.feedbackCaptureBatch!, "copy-intent-recorded");
+    if (!intent || !isRequestedTuple(intent, request)) {
+      return this.requireAttention(round, CAPTURE_PROTOCOL_AMBIGUITY_REASON);
+    }
     const expectedClipboardChangeCount = intent.expectedClipboardChangeCount;
     if (expectedClipboardChangeCount === undefined) {
-      throw new Error("Feedback image capture intent is invalid.");
+      return this.requireAttention(round, CAPTURE_PROTOCOL_AMBIGUITY_REASON);
     }
 
-    const image = await this.clipboard.readSingleImage(expectedClipboardChangeCount);
-    if (image.observedChangeCount !== expectedClipboardChangeCount + 1) {
-      throw new Error("Clipboard did not advance exactly once.");
+    let image: { observedChangeCount: number; pngBytes: Uint8Array };
+    try {
+      image = await this.clipboard.readSingleImage(expectedClipboardChangeCount);
+    } catch {
+      return this.requireAttention(round, CLIPBOARD_CAPTURE_AMBIGUITY_REASON);
     }
-    const imagePath = await this.artifacts.acceptFeedbackImageBytes(
-      request.roundId,
-      request.messageOrdinal,
-      request.attachmentIndex,
-      image.pngBytes
-    );
-    await this.store.save(applyRoundEvent(round, {
-      type: "feedback-image-accepted",
-      ...request,
-      imagePath
-    }));
+    if (
+      image.observedChangeCount !== expectedClipboardChangeCount + 1 ||
+      !(image.pngBytes instanceof Uint8Array) ||
+      image.pngBytes.length === 0
+    ) {
+      return this.requireAttention(round, CLIPBOARD_CAPTURE_AMBIGUITY_REASON);
+    }
+    let imagePath: string;
+    try {
+      imagePath = await this.artifacts.acceptFeedbackImageBytes(
+        request.roundId,
+        request.messageOrdinal,
+        request.attachmentIndex,
+        image.pngBytes
+      );
+    } catch {
+      return this.requireAttention(round, ARTIFACT_INSTALLATION_AMBIGUITY_REASON);
+    }
+    try {
+      await this.store.save(applyRoundEvent(round, {
+        type: "feedback-image-accepted",
+        ...request,
+        imagePath
+      }));
+    } catch {
+      return this.requireAttention(round, ARTIFACT_INSTALLATION_AMBIGUITY_REASON);
+    }
     return { action: "captured" };
   }
 
@@ -65,11 +128,28 @@ export class FeedbackImageAcquirer {
     if (round.phase !== "collecting-messages" || !round.feedbackCaptureBatch) {
       throw new Error("Feedback image capture is not available for this round.");
     }
+    const activeRounds = (await this.store.list()).filter(
+      (candidate) =>
+        candidate.phase !== "completed" &&
+        candidate.phase !== "stopped" &&
+        candidate.phase !== "needs-attention"
+    );
+    if (activeRounds.length !== 1 || activeRounds[0]!.id !== round.id) {
+      throw new Error("Feedback image capture does not target the active Feedback Round.");
+    }
     return round;
+  }
+
+  private async requireAttention(
+    round: RoundState,
+    reason: string
+  ): Promise<{ action: "needs-attention"; reason: string }> {
+    await this.store.save(applyRoundEvent(round, { type: "attention-required", reason }));
+    return { action: "needs-attention", reason };
   }
 }
 
-function findNextAttachment(
+function findAttachment(
   batch: FeedbackCaptureBatch,
   status: "selected" | "copy-intent-recorded"
 ) {
@@ -79,17 +159,34 @@ function findNextAttachment(
       return { ...attachment, messageOrdinal: message.messageOrdinal };
     }
   }
-  throw new Error("No feedback image capture is available.");
+  return undefined;
 }
 
-function requireRequestedTuple(
+function findRequestedAttachment(
+  batch: FeedbackCaptureBatch,
+  request: FeedbackImageCaptureRequest,
+  status: "accepted"
+) {
+  for (const message of batch.messages) {
+    const attachment = message.selectedAttachments.find(
+      (candidate) =>
+        candidate.status === status &&
+        message.messageOrdinal === request.messageOrdinal &&
+        candidate.attachmentIndex === request.attachmentIndex
+    );
+    if (attachment) {
+      return attachment;
+    }
+  }
+  return undefined;
+}
+
+function isRequestedTuple(
   attachment: { messageOrdinal: number; attachmentIndex: number },
   request: FeedbackImageCaptureRequest
-): void {
-  if (
-    attachment.messageOrdinal !== request.messageOrdinal ||
-    attachment.attachmentIndex !== request.attachmentIndex
-  ) {
-    throw new Error("Requested feedback image is not next for capture.");
-  }
+): boolean {
+  return (
+    attachment.messageOrdinal === request.messageOrdinal &&
+    attachment.attachmentIndex === request.attachmentIndex
+  );
 }

@@ -454,8 +454,15 @@ async function planRoundFeedbackCaptures(payload: unknown, store: RoundStateStor
       return messages;
     }, [])
   };
-  if (round.feedbackCaptureBatch && JSON.stringify(round.feedbackCaptureBatch) !== JSON.stringify(feedbackCaptureBatch)) {
-    throw new MessageCollectionAmbiguityError("Feedback capture selection changed after planning.");
+  if (
+    round.feedbackCaptureBatch &&
+    !hasSameFeedbackCaptureSelection(round.feedbackCaptureBatch, feedbackCaptureBatch)
+  ) {
+    return requireFeedbackCaptureAttention(
+      store,
+      round,
+      "Feedback image selection changed after planning; reconcile the Feedback Round manually."
+    );
   }
   if (planned.length === 0) {
     return { action: "wait", selectedCount: 0 };
@@ -470,6 +477,44 @@ async function planRoundFeedbackCaptures(payload: unknown, store: RoundStateStor
     attachmentIndex: first.attachmentIndex,
     selectedCount: planned.length
   };
+}
+
+function hasSameFeedbackCaptureSelection(
+  existing: NonNullable<Parameters<typeof applyRoundEvent>[0]["feedbackCaptureBatch"]>,
+  candidate: {
+    boundaryMessageUrl: string;
+    messages: Array<{
+      messageUrl: string;
+      messageOrdinal: number;
+      selectedAttachments: Array<{
+        attachmentIndex: number;
+        mediaType: "image/png" | "image/jpeg" | "image/webp";
+        status: "selected";
+      }>;
+    }>;
+  }
+): boolean {
+  return (
+    existing.boundaryMessageUrl === candidate.boundaryMessageUrl &&
+    existing.messages.length === candidate.messages.length &&
+    existing.messages.every((message, messageIndex) => {
+      const other = candidate.messages[messageIndex];
+      return (
+        other !== undefined &&
+        message.messageUrl === other.messageUrl &&
+        message.messageOrdinal === other.messageOrdinal &&
+        message.selectedAttachments.length === other.selectedAttachments.length &&
+        message.selectedAttachments.every((attachment, attachmentIndex) => {
+          const otherAttachment = other.selectedAttachments[attachmentIndex];
+          return (
+            otherAttachment !== undefined &&
+            attachment.attachmentIndex === otherAttachment.attachmentIndex &&
+            attachment.mediaType === otherAttachment.mediaType
+          );
+        })
+      );
+    })
+  );
 }
 
 async function preparePromptSynthesis(
@@ -667,6 +712,13 @@ async function preparePublication(
 async function planNext(payload: unknown, store: RoundStateStore): Promise<unknown> {
   const record = requireRecord(payload, "payload");
   const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
+  if (hasUnresolvedFeedbackCopyIntent(round)) {
+    return requireFeedbackCaptureAttention(
+      store,
+      round,
+      "A feedback image copy may already have occurred; reconcile the Feedback Round manually."
+    );
+  }
   const action = planNextAction(round);
   if (action.type === "needs-attention" && round.phase !== "needs-attention") {
     await store.save(
@@ -674,6 +726,24 @@ async function planNext(payload: unknown, store: RoundStateStore): Promise<unkno
     );
   }
   return action;
+}
+
+function hasUnresolvedFeedbackCopyIntent(round: {
+  feedbackCaptureBatch?: { messages: Array<{ selectedAttachments: Array<{ status: string }> }> };
+}): boolean {
+  return round.feedbackCaptureBatch?.messages.some((message) =>
+    message.selectedAttachments.some((attachment) => attachment.status === "copy-intent-recorded")
+  ) ?? false;
+}
+
+async function requireFeedbackCaptureAttention(
+  store: RoundStateStore,
+  round: Parameters<typeof applyRoundEvent>[0],
+  reason: string
+): Promise<{ action: "needs-attention"; roundId: string; reason: string }> {
+  const attention = applyRoundEvent(round, { type: "attention-required", reason });
+  await store.save(attention);
+  return { action: "needs-attention", roundId: round.id, reason };
 }
 
 const AMBIGUOUS_SIDE_EFFECT_PHASES: ReadonlySet<RoundPhase> = new Set([
