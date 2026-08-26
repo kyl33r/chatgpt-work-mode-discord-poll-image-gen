@@ -1,11 +1,14 @@
 import { join } from "node:path";
 
-export const ROUND_SCHEMA_VERSION = 5;
+export const ROUND_SCHEMA_VERSION = 6;
 export const OPERATION_TURN_NUMBER = 1;
 export const FEEDBACK_MESSAGE_LIMIT = 5;
+export const FEEDBACK_IMAGE_LIMIT_PER_MESSAGE = 2;
+export const FEEDBACK_IMAGE_LIMIT_PER_ROUND = 5;
 export const DISCORD_SCAN_INTERVAL_MS = 15_000;
 export const SYNTHESIZED_PROMPT_MAX_CHARACTERS = 1_200;
 export const SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"] as const;
+export const SUPPORTED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 export const STATE_ROOT = ".state";
 export const DISCORD_CHANNEL_ALLOWLIST_SCHEMA_VERSION = 1;
 export const DISCORD_CHANNEL_ALLOWLIST_PATH = join(
@@ -24,6 +27,9 @@ export const ROUND_STATE_FILE_NAME = "round.json";
 export const ROUND_MIGRATIONS_DIRECTORY_NAME = "migrations";
 export const ROUND_BASE_IMAGE_BASENAME = "base-image";
 export const ROUND_RESULT_IMAGE_BASENAME = "result-image";
+export const ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME = "feedback-images";
+export const ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN =
+  /^message-[1-9]\d*-attachment-\d+\.(?:png|jpe?g|webp)$/;
 export const BASE_IMAGE_STAGING_ROOT = ROUND_STATE_ROOT;
 export const RESULT_IMAGE_STAGING_ROOT = ROUND_STATE_ROOT;
 export const LEGACY_SHARED_ROUND_STATE_PATH = join(STATE_ROOT, "rounds.json");
@@ -32,6 +38,7 @@ export const LEGACY_SHARED_MIGRATION_ROOT = join(STATE_ROOT, "migrations");
 export const ROUND_MIGRATION_STAGING_DIRECTORY = ".round-migration-v4";
 export const LEGACY_V3_STATE_BACKUP_FILE = "rounds-v3.json";
 export const LEGACY_V4_ROUND_BACKUP_FILE = "round-v4.json";
+export const LEGACY_V5_ROUND_BACKUP_FILE = "round-v5.json";
 export const LEGACY_V2_STATE_BACKUP_FILE = "rounds-v2.json";
 export const RESULT_MARKER_TEMPLATE = "===== RESULT: <id> =====";
 export const POLL_START_MARKER_TEMPLATE = "===== POLL START: <id> =====";
@@ -42,11 +49,13 @@ export const GENERATION_REFUSED_TEMPLATE =
 export const GENERATION_FAILED_TEMPLATE =
   "===== GENERATION FAILED: <id> ===== — No image was produced.";
 export const MESSAGE_COLLECTION_INSTRUCTIONS_TEMPLATE =
-  "The next <limit> non-empty text messages in this channel will be used as image-edit feedback.";
+  "The next <messageLimit> ordinary non-empty text messages in this channel will be used as image-edit feedback. Each qualifying message may contribute up to <perMessageImageLimit> supported images, with at most <roundImageLimit> images accepted for the whole round. Later attachments beyond either limit are ignored in Discord arrival and attachment order. Supported formats: PNG, JPEG, and WebP.";
 export const IMAGE_EDIT_SUFFIX =
   "Preserve unrelated content. Produce exactly one edited image.";
 export const SYNTHESIZED_PROMPT_PREAMBLE =
   "Edit the supplied base image using this synthesized participant feedback:";
+export const PARTICIPANT_REFERENCE_INSTRUCTION =
+  "Participant reference images are supporting visual context for the requested edits; keep the Base Image as the edit target.";
 export const SYNTHESIZED_PROMPT_PROHIBITED_PATTERNS = [
   /https?:\/\//i,
   /www\./i,

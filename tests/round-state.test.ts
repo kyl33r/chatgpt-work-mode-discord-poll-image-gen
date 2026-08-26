@@ -102,7 +102,7 @@ describe("round state", () => {
         parentRoundId: "RPARENT"
       })
     ).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
       id: "RCHILD",
       parentRoundId: "RPARENT"
     });
@@ -124,6 +124,7 @@ function fiveMessages() {
     authorId: "alice",
     authorName: "Alice",
     timestamp: `2026-08-24T10:0${index + 1}:00.000Z`,
-    text: `message ${index + 1}`
+    text: `message ${index + 1}`,
+    contextImages: []
   }));
 }

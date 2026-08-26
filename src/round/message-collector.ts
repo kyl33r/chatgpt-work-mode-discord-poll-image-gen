@@ -1,3 +1,15 @@
+import {
+  FEEDBACK_IMAGE_LIMIT_PER_MESSAGE,
+  FEEDBACK_IMAGE_LIMIT_PER_ROUND,
+  SUPPORTED_IMAGE_MIME_TYPES
+} from "../constants.js";
+
+export interface DiscordAttachmentObservation {
+  attachmentIndex: number;
+  mediaType: string;
+  imagePath: string;
+}
+
 export interface DiscordMessageObservation {
   kind: "ordinary-text" | "system" | "attachment-only";
   roundId: string;
@@ -7,6 +19,12 @@ export interface DiscordMessageObservation {
   authorName: string;
   timestamp: string;
   text: string;
+  attachments: DiscordAttachmentObservation[];
+}
+
+export interface ContextImage {
+  attachmentIndex: number;
+  imagePath: string;
 }
 
 export interface CapturedMessage {
@@ -15,6 +33,7 @@ export interface CapturedMessage {
   authorName: string;
   timestamp: string;
   text: string;
+  contextImages: ContextImage[];
 }
 
 export interface CollectMessagesInput {
@@ -55,7 +74,7 @@ export function collectMessages(input: CollectMessagesInput): CollectionResult {
       throw new Error("Message observation does not match the active round boundary.");
     }
     const timestamp = Date.parse(observation.timestamp);
-    if (!Number.isFinite(timestamp) || timestamp < previousTimestamp) {
+    if (!Number.isFinite(timestamp) || timestamp <= previousTimestamp) {
       throw new MessageCollectionAmbiguityError(
         "Message observations are not in Discord arrival order."
       );
@@ -64,6 +83,19 @@ export function collectMessages(input: CollectMessagesInput): CollectionResult {
       throw new Error("Message observation predates the active round boundary.");
     }
     previousTimestamp = timestamp;
+    let previousAttachmentIndex = -1;
+    for (const attachment of observation.attachments) {
+      if (
+        !Number.isInteger(attachment.attachmentIndex) ||
+        attachment.attachmentIndex < 0 ||
+        attachment.attachmentIndex <= previousAttachmentIndex
+      ) {
+        throw new MessageCollectionAmbiguityError(
+          "Message attachments are not in Discord attachment order."
+        );
+      }
+      previousAttachmentIndex = attachment.attachmentIndex;
+    }
   }
 
   const captured = [...input.existing];
@@ -77,6 +109,10 @@ export function collectMessages(input: CollectMessagesInput): CollectionResult {
     }
     return Math.max(latest, timestamp);
   }, Number.NEGATIVE_INFINITY);
+  let capturedImageCount = captured.reduce(
+    (total, message) => total + message.contextImages.length,
+    0
+  );
 
   for (const observation of input.observed) {
     if (captured.length >= input.limit) {
@@ -95,13 +131,22 @@ export function collectMessages(input: CollectMessagesInput): CollectionResult {
         "A rescan discovered a message before the persisted collection boundary."
       );
     }
+    const contextImages = observation.attachments
+      .filter((attachment) =>
+        SUPPORTED_IMAGE_MIME_TYPES.some((mediaType) => mediaType === attachment.mediaType)
+      )
+      .slice(0, FEEDBACK_IMAGE_LIMIT_PER_MESSAGE)
+      .slice(0, Math.max(0, FEEDBACK_IMAGE_LIMIT_PER_ROUND - capturedImageCount))
+      .map(({ attachmentIndex, imagePath }) => ({ attachmentIndex, imagePath }));
     captured.push({
       messageUrl: observation.messageUrl,
       authorId: observation.authorId,
       authorName: observation.authorName,
       timestamp: observation.timestamp,
-      text: observation.text
+      text: observation.text,
+      contextImages
     });
+    capturedImageCount += contextImages.length;
     capturedUrls.add(observation.messageUrl);
   }
 

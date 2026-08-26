@@ -121,6 +121,7 @@ describe("round CLI lifecycle", () => {
       operationId: "R100:generating:1:16e1daee7f6b",
       roundId: "R100",
       baseImagePath,
+      contextImagePaths: [],
       instruction: synthesizedPrompt
     });
 

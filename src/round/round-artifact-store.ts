@@ -5,6 +5,8 @@ import sharp from "sharp";
 
 import {
   ROUND_BASE_IMAGE_BASENAME,
+  ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN,
+  ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME,
   ROUND_RESULT_IMAGE_BASENAME,
   SUPPORTED_IMAGE_EXTENSIONS
 } from "../constants.js";
@@ -14,6 +16,18 @@ export interface RoundArtifactStore {
   acceptBaseImage(roundId: string, candidatePath: string): Promise<string>;
   acceptResultImage(roundId: string, candidatePath: string): Promise<string>;
   requireResultImage(roundId: string, storedPath: string): Promise<string>;
+  acceptFeedbackImage(
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    candidatePath: string
+  ): Promise<string>;
+  requireFeedbackImage(
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    storedPath: string
+  ): Promise<string>;
   copyResultAsBase(
     sourceRoundId: string,
     targetRoundId: string,
@@ -49,6 +63,31 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
       storedPath,
       "Recorded result image is missing or unsupported."
     );
+  }
+
+  public async acceptFeedbackImage(
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    candidatePath: string
+  ): Promise<string> {
+    const accepted = await this.requireValidFeedbackImage(
+      roundId,
+      messageOrdinal,
+      attachmentIndex,
+      candidatePath
+    );
+    await chmod(accepted, 0o600);
+    return accepted;
+  }
+
+  public requireFeedbackImage(
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    storedPath: string
+  ): Promise<string> {
+    return this.requireValidFeedbackImage(roundId, messageOrdinal, attachmentIndex, storedPath);
   }
 
   public async copyResultAsBase(
@@ -144,6 +183,34 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
       isAbsolute(pathFromCapsule) ||
       !SUPPORTED_IMAGE_EXTENSIONS.some((candidate) => candidate === extension)
     ) {
+      throw new Error(errorMessage);
+    }
+    return resolvedPath;
+  }
+
+  private async requireValidFeedbackImage(
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    candidatePath: string
+  ): Promise<string> {
+    const errorMessage =
+      "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule.";
+    const resolvedPath = await this.requireCapsuleImage(roundId, candidatePath, errorMessage);
+    const resolvedCapsule = await realpath(roundCapsuleDirectory(this.roundsRoot, roundId));
+    const expectedName = `message-${messageOrdinal}-attachment-${attachmentIndex}${extname(resolvedPath).toLowerCase()}`;
+    if (
+      !Number.isInteger(messageOrdinal) ||
+      messageOrdinal <= 0 ||
+      !Number.isInteger(attachmentIndex) ||
+      attachmentIndex < 0 ||
+      dirname(relative(resolvedCapsule, resolvedPath)) !== ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME ||
+      !ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN.test(basename(resolvedPath)) ||
+      basename(resolvedPath) !== expectedName
+    ) {
+      throw new Error(errorMessage);
+    }
+    if (!(await isDecodableImageOfExpectedFormat(resolvedPath))) {
       throw new Error(errorMessage);
     }
     return resolvedPath;

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -73,18 +73,21 @@ describe("JsonRoundArtifactStore", () => {
     const directory = await temporaryDirectory();
     const roundsRoot = join(directory, "rounds");
     const capsule = join(roundsRoot, "R001");
-    const nestedDirectory = join(capsule, "feedback-images");
-    await mkdir(nestedDirectory, { recursive: true });
+    const feedbackRoot = join(capsule, "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
     const baseImage = join(capsule, "base-image.png");
-    const nestedImage = join(nestedDirectory, "participant.png");
+    const feedbackImage = join(feedbackRoot, "message-1-attachment-0.png");
     const image = await validPng();
-    await Promise.all([writeFile(baseImage, image), writeFile(nestedImage, image)]);
+    await Promise.all([
+      writeFile(baseImage, image),
+      writeFile(feedbackImage, image)
+    ]);
     const artifacts = new JsonRoundArtifactStore(roundsRoot);
 
     await expect(artifacts.requireResultImage("R001", baseImage)).rejects.toThrow(
       "Recorded result image is missing or unsupported."
     );
-    await expect(artifacts.requireResultImage("R001", nestedImage)).rejects.toThrow(
+    await expect(artifacts.requireResultImage("R001", feedbackImage)).rejects.toThrow(
       "Recorded result image is missing or unsupported."
     );
   });
@@ -170,6 +173,91 @@ describe("JsonRoundArtifactStore", () => {
         join(roundsRoot, "R001", "result-image.png")
       )
     ).rejects.toThrow("Result image must be staged under the durable state directory.");
+  });
+
+  it("accepts a signature-valid participant image only from feedback-images", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const imagePath = join(feedbackRoot, "message-1-attachment-0.png");
+    await writeFile(imagePath, await validPng());
+
+    const accepted = await new JsonRoundArtifactStore(roundsRoot).acceptFeedbackImage(
+      "R001",
+      1,
+      0,
+      imagePath
+    );
+
+    expect(accepted).toBe(await realpath(imagePath));
+    expect((await stat(accepted)).mode & 0o777).toBe(0o600);
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).requireFeedbackImage("R001", 2, 0, imagePath)
+    ).rejects.toThrow(
+      "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule."
+    );
+  });
+
+  it("rejects participant images with mismatched bytes or the wrong capsule location", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const mismatched = join(feedbackRoot, "bad.png");
+    const wrongLocation = join(roundsRoot, "R001", "ordinary.png");
+    await writeFile(mismatched, Buffer.from([0xff, 0xd8, 0xff]));
+    await writeFile(wrongLocation, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+
+    await expect(artifacts.acceptFeedbackImage("R001", 1, 0, mismatched)).rejects.toThrow(
+      "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule."
+    );
+    await expect(artifacts.acceptFeedbackImage("R001", 1, 0, wrongLocation)).rejects.toThrow(
+      "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule."
+    );
+  });
+
+  it("rejects truncated PNG, JPEG, and WebP downloads", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const files = [
+      ["message-1-attachment-0.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+      ["message-1-attachment-1.jpg", Buffer.from([0xff, 0xd8, 0xff, 0xd9])],
+      ["message-2-attachment-0.webp", Buffer.from("RIFF0000WEBP", "ascii")]
+    ] as const;
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+
+    for (const [name, bytes] of files) {
+      const imagePath = join(feedbackRoot, name);
+      await writeFile(imagePath, bytes);
+      const match = name.match(/^message-(\d+)-attachment-(\d+)/)!;
+      await expect(
+        artifacts.acceptFeedbackImage("R001", Number(match[1]), Number(match[2]), imagePath)
+      ).rejects.toThrow(
+        "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule."
+      );
+    }
+  });
+
+  it("rejects a complete-looking PNG whose encoded payload is corrupt", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const imagePath = join(feedbackRoot, "message-1-attachment-0.png");
+    const corrupt = Buffer.from(await validPng());
+    const imageDataMarker = corrupt.indexOf(Buffer.from("IDAT", "ascii"));
+    corrupt[imageDataMarker + 4] = (corrupt[imageDataMarker + 4] ?? 0) ^ 0xff;
+    await writeFile(imagePath, corrupt);
+
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).acceptFeedbackImage("R001", 1, 0, imagePath)
+    ).rejects.toThrow(
+      "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule."
+    );
   });
 });
 

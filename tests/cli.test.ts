@@ -1,16 +1,22 @@
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import sharp from "sharp";
 
+import {
+  FEEDBACK_IMAGE_LIMIT_PER_MESSAGE,
+  FEEDBACK_IMAGE_LIMIT_PER_ROUND,
+  PARTICIPANT_REFERENCE_INSTRUCTION
+} from "../src/constants.js";
 import { executeCommand as executeRoundCommand } from "../src/cli.js";
 import {
   JsonRoundArtifactStore,
   type RoundArtifactStore
 } from "../src/round/round-artifact-store.js";
 import { applyRoundEvent, createRound } from "../src/round/round-state.js";
+import type { DiscordMessageObservation } from "../src/round/message-collector.js";
 import {
   JsonRoundStateStore,
   type RoundStateStore
@@ -29,6 +35,11 @@ afterEach(async () => {
 });
 
 describe("executeCommand", () => {
+  it("uses the configured participant-image limits", () => {
+    expect(FEEDBACK_IMAGE_LIMIT_PER_MESSAGE).toBe(2);
+    expect(FEEDBACK_IMAGE_LIMIT_PER_ROUND).toBe(5);
+  });
+
   it("prepares one Base Image post with the configured marker and message limit", async () => {
     const directory = await mkdtemp(join(tmpdir(), "feedback-round-cli-"));
     temporaryDirectories.push(directory);
@@ -76,7 +87,7 @@ describe("executeCommand", () => {
       action: "post-base-image",
       roundId: "RSTART",
       caption:
-        "===== POLL START: RSTART =====\nThe next 5 non-empty text messages in this channel will be used as image-edit feedback."
+        "===== POLL START: RSTART =====\nThe next 5 ordinary non-empty text messages in this channel will be used as image-edit feedback. Each qualifying message may contribute up to 2 supported images, with at most 5 images accepted for the whole round. Later attachments beyond either limit are ignored in Discord arrival and attachment order. Supported formats: PNG, JPEG, and WebP."
     });
     expect(await store.get("RSTART")).toMatchObject({
       phase: "submitting-base",
@@ -164,7 +175,7 @@ describe("executeCommand", () => {
       action: "post-base-image",
       roundId: "R003",
       caption:
-        "===== POLL START: R003 =====\nThe next 5 non-empty text messages in this channel will be used as image-edit feedback."
+        "===== POLL START: R003 =====\nThe next 5 ordinary non-empty text messages in this channel will be used as image-edit feedback. Each qualifying message may contribute up to 2 supported images, with at most 5 images accepted for the whole round. Later attachments beyond either limit are ignored in Discord arrival and attachment order. Supported formats: PNG, JPEG, and WebP."
     });
     const continued = await store.get("R003");
     expect(continued).toMatchObject({
@@ -218,6 +229,8 @@ describe("executeCommand", () => {
       acceptBaseImage: async () => "unused",
       acceptResultImage: async () => "unused",
       requireResultImage: async () => "unused",
+      acceptFeedbackImage: async () => "unused",
+      requireFeedbackImage: async () => "unused",
       copyResultAsBase: async () => {
         throw new Error("copy failed");
       },
@@ -360,7 +373,8 @@ describe("executeCommand", () => {
     expect(await runCommand("prepare-prompt-synthesis", { roundId: "R001" }, store)).toEqual({
       action: "synthesize-prompt",
       roundId: "R001",
-      feedbackTexts: [1, 2, 3, 4, 5].map((index) => `random message ${index}`)
+      feedbackTexts: [1, 2, 3, 4, 5].map((index) => `random message ${index}`),
+      contextImagePaths: []
     });
 
     expect(
@@ -390,6 +404,49 @@ describe("executeCommand", () => {
         store
       )
     ).toEqual({ action: "recorded", roundId: "R001", phase: "ready-to-generate" });
+  });
+
+  it("validates and preserves participant image order through generation", async () => {
+    const store = await createStore();
+    await store.save(collectingRound("R001"));
+    const roundsRoot = join(temporaryDirectories.at(-1)!, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const first = join(feedbackRoot, "message-1-attachment-0.png");
+    const second = join(feedbackRoot, "message-2-attachment-0.png");
+    await writeFile(first, await validPng());
+    await writeFile(second, await validPng());
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+    const messages = [1, 2, 3, 4, 5].map(observation);
+    messages[0]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png", imagePath: first }];
+    messages[1]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png", imagePath: second }];
+
+    await runCommand(
+      "collect-messages",
+      { roundId: "R001", boundaryMessageUrl: "base-message", messages },
+      store,
+      { artifacts }
+    );
+    expect(await runCommand("prepare-prompt-synthesis", { roundId: "R001" }, store)).toMatchObject({
+      contextImagePaths: [await realpath(first), await realpath(second)]
+    });
+    const prompt =
+      "Edit the supplied base image using this synthesized participant feedback:\n" +
+      `${PARTICIPANT_REFERENCE_INSTRUCTION}\n` +
+      "Apply all requested changes coherently.\n" +
+      "Preserve unrelated content. Produce exactly one edited image.";
+    await runCommand("confirm-synthesized-prompt", { roundId: "R001", synthesizedPrompt: prompt }, store);
+    await runCommand(
+      "confirm-collection-closed",
+      { roundId: "R001", closedMessageUrl: "closed-message" },
+      store
+    );
+    await expect(
+      runCommand("prepare-generation", { roundId: "R001" }, store, { artifacts })
+    ).resolves.toMatchObject({
+      contextImagePaths: [await realpath(first), await realpath(second)],
+      instruction: prompt
+    });
   });
 
   it("persists needs-attention when a scan has ambiguous message order", async () => {
@@ -443,6 +500,7 @@ describe("executeCommand", () => {
       operationId: "RGEN:generating:1:1822396ccc5e",
       roundId: "RGEN",
       baseImagePath: "/tmp/base.png",
+      contextImagePaths: [],
       instruction: SYNTHESIZED_PROMPT
     });
     expect((await store.get("RGEN"))?.phase).toBe("generating");
@@ -659,7 +717,7 @@ function readyRound(roundId: string) {
   });
 }
 
-function observation(index: number) {
+function observation(index: number): DiscordMessageObservation {
   return {
     kind: "ordinary-text",
     roundId: "R001",
@@ -668,14 +726,20 @@ function observation(index: number) {
     authorId: "same-author",
     authorName: "Same author",
     timestamp: `2026-08-24T10:0${index}:00.000Z`,
-    text: `random message ${index}`
+    text: `random message ${index}`,
+    attachments: []
   };
 }
 
 function captured(index: number) {
-  const { kind: _kind, roundId: _roundId, boundaryMessageUrl: _boundary, ...message } =
-    observation(index);
-  return message;
+  const {
+    kind: _kind,
+    roundId: _roundId,
+    boundaryMessageUrl: _boundary,
+    attachments: _attachments,
+    ...message
+  } = observation(index);
+  return { ...message, contextImages: [] };
 }
 
 async function createStore(): Promise<JsonRoundStateStore> {
