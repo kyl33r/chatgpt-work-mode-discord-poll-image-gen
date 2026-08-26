@@ -230,6 +230,7 @@ describe("executeCommand", () => {
       acceptResultImage: async () => "unused",
       requireResultImage: async () => "unused",
       acceptFeedbackImage: async () => "unused",
+      acceptFeedbackImageBytes: async () => "unused",
       requireFeedbackImage: async () => "unused",
       copyResultAsBase: async () => {
         throw new Error("copy failed");

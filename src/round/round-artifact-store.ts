@@ -1,12 +1,30 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, readdir, realpath, rm, rmdir, unlink } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  rmdir,
+  unlink
+} from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 
 import {
+  FEEDBACK_MESSAGE_LIMIT,
+  PRIVATE_DIRECTORY_MODE,
+  PRIVATE_FILE_MODE,
+  ROUND_FEEDBACK_IMAGE_FILENAME_TEMPLATE,
   ROUND_BASE_IMAGE_BASENAME,
   ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN,
   ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME,
+  ROUND_FEEDBACK_IMAGE_TEMPORARY_FILENAME_PREFIX,
   ROUND_RESULT_IMAGE_BASENAME,
   SUPPORTED_IMAGE_EXTENSIONS
 } from "../constants.js";
@@ -22,6 +40,12 @@ export interface RoundArtifactStore {
     attachmentIndex: number,
     candidatePath: string
   ): Promise<string>;
+  acceptFeedbackImageBytes(
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    pngBytes: Uint8Array
+  ): Promise<string>;
   requireFeedbackImage(
     roundId: string,
     messageOrdinal: number,
@@ -36,8 +60,16 @@ export interface RoundArtifactStore {
   discardUnpersistedBase(roundId: string, storedPath: string): Promise<void>;
 }
 
+export interface JsonRoundArtifactStoreOptions {
+  renameFeedbackImage?: (temporaryPath: string, destination: string) => Promise<void>;
+  writeFeedbackImageTemporaryFile?: (temporaryPath: string, pngBytes: Uint8Array) => Promise<void>;
+}
+
 export class JsonRoundArtifactStore implements RoundArtifactStore {
-  public constructor(private readonly roundsRoot: string) {}
+  public constructor(
+    private readonly roundsRoot: string,
+    private readonly options: JsonRoundArtifactStoreOptions = {}
+  ) {}
 
   public acceptBaseImage(roundId: string, candidatePath: string): Promise<string> {
     return this.requireCapsuleImage(
@@ -79,6 +111,65 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     );
     await chmod(accepted, 0o600);
     return accepted;
+  }
+
+  public async acceptFeedbackImageBytes(
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    pngBytes: Uint8Array
+  ): Promise<string> {
+    const errorMessage = "Feedback image bytes cannot be installed safely.";
+    if (
+      !Number.isInteger(messageOrdinal) ||
+      messageOrdinal <= 0 ||
+      messageOrdinal > FEEDBACK_MESSAGE_LIMIT ||
+      !Number.isInteger(attachmentIndex) ||
+      attachmentIndex < 0 ||
+      pngBytes.byteLength === 0
+    ) {
+      throw new Error(errorMessage);
+    }
+
+    const feedbackImagesDirectory = await this.requireOwnedFeedbackImagesDirectory(roundId, errorMessage);
+    const destination = join(
+      feedbackImagesDirectory,
+      feedbackImageFilename(messageOrdinal, attachmentIndex)
+    );
+    await this.requireMissingDestination(destination, errorMessage);
+
+    const temporaryPath = join(
+      feedbackImagesDirectory,
+      `${ROUND_FEEDBACK_IMAGE_TEMPORARY_FILENAME_PREFIX}${randomUUID()}.tmp`
+    );
+    let temporaryCreated = false;
+    try {
+      temporaryCreated = true;
+      await (this.options.writeFeedbackImageTemporaryFile ?? writePrivateFileExclusively)(
+        temporaryPath,
+        pngBytes
+      );
+      await chmod(temporaryPath, PRIVATE_FILE_MODE);
+      const temporaryMetadata = await lstat(temporaryPath);
+      if (
+        !temporaryMetadata.isFile() ||
+        temporaryMetadata.isSymbolicLink() ||
+        temporaryMetadata.nlink !== 1 ||
+        !(await isDecodablePng(temporaryPath))
+      ) {
+        throw new Error(errorMessage);
+      }
+      await this.requireMissingDestination(destination, errorMessage);
+      await (this.options.renameFeedbackImage ?? rename)(temporaryPath, destination);
+      temporaryCreated = false;
+      await chmod(destination, PRIVATE_FILE_MODE);
+      return await this.requireFeedbackImage(roundId, messageOrdinal, attachmentIndex, destination);
+    } catch (error) {
+      if (temporaryCreated) {
+        await unlink(temporaryPath).catch(() => undefined);
+      }
+      throw error instanceof Error && error.message === errorMessage ? error : new Error(errorMessage);
+    }
   }
 
   public requireFeedbackImage(
@@ -188,6 +279,67 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     return resolvedPath;
   }
 
+  private async requireOwnedFeedbackImagesDirectory(
+    roundId: string,
+    errorMessage: string
+  ): Promise<string> {
+    try {
+      assertSafeRoundId(roundId);
+    } catch {
+      throw new Error(errorMessage);
+    }
+    const capsule = roundCapsuleDirectory(this.roundsRoot, roundId);
+    const feedbackImagesDirectory = join(capsule, ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME);
+    try {
+      const capsuleMetadata = await lstat(capsule);
+      if (!capsuleMetadata.isDirectory() || capsuleMetadata.isSymbolicLink()) {
+        throw new Error(errorMessage);
+      }
+      const [resolvedRoot, resolvedCapsule] = await Promise.all([
+        realpath(resolve(this.roundsRoot)),
+        realpath(capsule)
+      ]);
+      if (relative(resolvedRoot, resolvedCapsule) !== roundId) {
+        throw new Error(errorMessage);
+      }
+      await mkdir(feedbackImagesDirectory, { mode: PRIVATE_DIRECTORY_MODE });
+    } catch (error) {
+      if (!(isNodeError(error, "EEXIST"))) {
+        throw new Error(errorMessage);
+      }
+    }
+
+    try {
+      const [directoryMetadata, resolvedCapsule, resolvedDirectory] = await Promise.all([
+        lstat(feedbackImagesDirectory),
+        realpath(capsule),
+        realpath(feedbackImagesDirectory)
+      ]);
+      if (
+        !directoryMetadata.isDirectory() ||
+        directoryMetadata.isSymbolicLink() ||
+        resolvedDirectory !== join(resolvedCapsule, ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME)
+      ) {
+        throw new Error(errorMessage);
+      }
+      return resolvedDirectory;
+    } catch {
+      throw new Error(errorMessage);
+    }
+  }
+
+  private async requireMissingDestination(destination: string, errorMessage: string): Promise<void> {
+    try {
+      await lstat(destination);
+    } catch (error) {
+      if (isNodeError(error, "ENOENT")) {
+        return;
+      }
+      throw new Error(errorMessage);
+    }
+    throw new Error(errorMessage);
+  }
+
   private async requireValidFeedbackImage(
     roundId: string,
     messageOrdinal: number,
@@ -249,5 +401,44 @@ async function isDecodableImageOfExpectedFormat(path: string): Promise<boolean> 
     return true;
   } catch {
     return false;
+  }
+}
+
+async function isDecodablePng(path: string): Promise<boolean> {
+  try {
+    const decoder = sharp(path, { failOn: "error" });
+    const metadata = await decoder.metadata();
+    if (metadata.format !== "png" || !metadata.width || !metadata.height) {
+      return false;
+    }
+    await decoder.clone().raw().toBuffer();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function feedbackImageFilename(messageOrdinal: number, attachmentIndex: number): string {
+  return ROUND_FEEDBACK_IMAGE_FILENAME_TEMPLATE.replace(
+    "<messageOrdinal>",
+    String(messageOrdinal)
+  ).replace("<attachmentIndex>", String(attachmentIndex));
+}
+
+function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
+async function writePrivateFileExclusively(temporaryPath: string, pngBytes: Uint8Array): Promise<void> {
+  const file = await open(
+    temporaryPath,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
+    PRIVATE_FILE_MODE
+  );
+  try {
+    await file.writeFile(pngBytes);
+    await file.sync();
+  } finally {
+    await file.close();
   }
 }

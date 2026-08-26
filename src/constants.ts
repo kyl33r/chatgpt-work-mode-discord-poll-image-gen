@@ -28,8 +28,13 @@ export const ROUND_MIGRATIONS_DIRECTORY_NAME = "migrations";
 export const ROUND_BASE_IMAGE_BASENAME = "base-image";
 export const ROUND_RESULT_IMAGE_BASENAME = "result-image";
 export const ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME = "feedback-images";
+export const ROUND_FEEDBACK_IMAGE_FILENAME_TEMPLATE =
+  "message-<messageOrdinal>-attachment-<attachmentIndex>.png";
+export const ROUND_FEEDBACK_IMAGE_TEMPORARY_FILENAME_PREFIX = ".feedback-image-";
 export const ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN =
   /^message-[1-9]\d*-attachment-\d+\.(?:png|jpe?g|webp)$/;
+export const PRIVATE_FILE_MODE = 0o600;
+export const PRIVATE_DIRECTORY_MODE = 0o700;
 export const BASE_IMAGE_STAGING_ROOT = ROUND_STATE_ROOT;
 export const RESULT_IMAGE_STAGING_ROOT = ROUND_STATE_ROOT;
 export const LEGACY_SHARED_ROUND_STATE_PATH = join(STATE_ROOT, "rounds.json");

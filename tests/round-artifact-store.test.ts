@@ -1,4 +1,15 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +25,162 @@ afterEach(async () => {
 });
 
 describe("JsonRoundArtifactStore", () => {
+  it("installs canonical PNG bytes into the deterministic feedback destination", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const bytes = await validPng();
+
+    const accepted = await new JsonRoundArtifactStore(roundsRoot).acceptFeedbackImageBytes(
+      "R001",
+      1,
+      0,
+      bytes
+    );
+
+    expect(accepted).toBe(await realpath(join(feedbackRoot, "message-1-attachment-0.png")));
+    expect(await readFile(accepted)).toEqual(bytes);
+    expect((await stat(accepted)).mode & 0o777).toBe(0o600);
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).requireFeedbackImage("R001", 1, 0, accepted)
+    ).resolves.toBe(accepted);
+  });
+
+  it("cleans its private temporary file when atomic installation fails", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const artifacts = new JsonRoundArtifactStore(roundsRoot, {
+      renameFeedbackImage: async () => {
+        throw new Error("simulated rename failure");
+      }
+    });
+
+    await expect(artifacts.acceptFeedbackImageBytes("R001", 1, 0, await validPng())).rejects.toThrow(
+      "Feedback image bytes cannot be installed safely."
+    );
+    await expect(readdir(feedbackRoot)).resolves.toEqual([]);
+  });
+
+  it("leaves no destination when exclusive temporary staging fails", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const artifacts = new JsonRoundArtifactStore(roundsRoot, {
+      writeFeedbackImageTemporaryFile: async () => {
+        throw new Error("simulated staging failure");
+      }
+    });
+
+    await expect(artifacts.acceptFeedbackImageBytes("R001", 1, 0, await validPng())).rejects.toThrow(
+      "Feedback image bytes cannot be installed safely."
+    );
+    await expect(readdir(feedbackRoot)).resolves.toEqual([]);
+  });
+
+  it("rejects empty, corrupt, truncated, and non-PNG byte payloads without artifacts", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const png = await validPng();
+    const corrupt = Buffer.from(png);
+    const imageDataOffset = corrupt.indexOf(Buffer.from("IDAT", "ascii")) + 4;
+    const imageDataByte = corrupt[imageDataOffset];
+    if (imageDataByte === undefined) {
+      throw new Error("Synthetic PNG fixture is missing image data.");
+    }
+    corrupt[imageDataOffset] = imageDataByte ^ 0xff;
+    const invalidPayloads = [
+      Buffer.alloc(0),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      corrupt,
+      await sharp({
+        create: { width: 1, height: 1, channels: 4, background: "black" }
+      }).jpeg().toBuffer()
+    ];
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+
+    for (const payload of invalidPayloads) {
+      await expect(artifacts.acceptFeedbackImageBytes("R001", 1, 0, payload)).rejects.toThrow(
+        "Feedback image bytes cannot be installed safely."
+      );
+      await expect(readdir(feedbackRoot)).resolves.toEqual([]);
+    }
+  });
+
+  it("rejects unsafe tuple values and keeps bytes inside the owning capsule", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    await Promise.all([
+      mkdir(join(roundsRoot, "R001", "feedback-images"), { recursive: true }),
+      mkdir(join(roundsRoot, "R002", "feedback-images"), { recursive: true })
+    ]);
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+    const bytes = await validPng();
+
+    await expect(artifacts.acceptFeedbackImageBytes("../R002", 1, 0, bytes)).rejects.toThrow(
+      "Feedback image bytes cannot be installed safely."
+    );
+    await expect(artifacts.acceptFeedbackImageBytes("R001", 0, 0, bytes)).rejects.toThrow(
+      "Feedback image bytes cannot be installed safely."
+    );
+    await expect(artifacts.acceptFeedbackImageBytes("R001", 6, 0, bytes)).rejects.toThrow(
+      "Feedback image bytes cannot be installed safely."
+    );
+    await expect(artifacts.acceptFeedbackImageBytes("R001", 1, -1, bytes)).rejects.toThrow(
+      "Feedback image bytes cannot be installed safely."
+    );
+    const accepted = await artifacts.acceptFeedbackImageBytes("R001", 1, 0, bytes);
+    expect(accepted).toBe(
+      await realpath(join(roundsRoot, "R001", "feedback-images", "message-1-attachment-0.png"))
+    );
+    await expect(readdir(join(roundsRoot, "R002", "feedback-images"))).resolves.toEqual([]);
+  });
+
+  it("rejects capsule and feedback-directory symlinks", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const aliasedCapsule = join(roundsRoot, "R002");
+    const outsideDirectory = join(directory, "outside-feedback-images");
+    await Promise.all([mkdir(aliasedCapsule, { recursive: true }), mkdir(outsideDirectory)]);
+    await symlink(aliasedCapsule, join(roundsRoot, "R001"));
+
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).acceptFeedbackImageBytes("R001", 1, 0, await validPng())
+    ).rejects.toThrow("Feedback image bytes cannot be installed safely.");
+
+    await rm(join(roundsRoot, "R001"));
+    await mkdir(join(roundsRoot, "R001"));
+    await symlink(outsideDirectory, join(roundsRoot, "R001", "feedback-images"));
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).acceptFeedbackImageBytes("R001", 1, 0, await validPng())
+    ).rejects.toThrow("Feedback image bytes cannot be installed safely.");
+    await expect(readdir(outsideDirectory)).resolves.toEqual([]);
+  });
+
+  it("never overwrites a pre-existing destination or hard-link alias", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    const destination = join(feedbackRoot, "message-1-attachment-0.png");
+    const aliasSource = join(directory, "alias-source.png");
+    const original = await validPng();
+    await mkdir(feedbackRoot, { recursive: true });
+    await writeFile(aliasSource, original);
+    await link(aliasSource, destination);
+
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).acceptFeedbackImageBytes("R001", 1, 0, await validPng())
+    ).rejects.toThrow("Feedback image bytes cannot be installed safely.");
+    expect(await readFile(destination)).toEqual(original);
+    expect((await stat(destination)).nlink).toBe(2);
+    await expect(readdir(feedbackRoot)).resolves.toEqual(["message-1-attachment-0.png"]);
+  });
+
   it("copies one source Result Image into a distinct target Base Image", async () => {
     const directory = await temporaryDirectory();
     const roundsRoot = join(directory, "rounds");
