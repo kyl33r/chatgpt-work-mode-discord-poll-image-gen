@@ -9,9 +9,11 @@ export const DISCORD_SCAN_INTERVAL_MS = 15_000;
 export const DISCORD_CONVERSATION_PROVIDER = "discord";
 export const CONVERSATION_SOURCE_FAILURE_CATEGORIES = [
   "login-interrupted",
+  "missing-boundary",
   "virtualization-gap",
   "unstable-identity",
-  "ambiguous-order"
+  "ambiguous-order",
+  "destination-mismatch"
 ] as const;
 export const SYNTHESIZED_PROMPT_MAX_CHARACTERS = 1_200;
 export const SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"] as const;

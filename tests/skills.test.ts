@@ -2,7 +2,11 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { matchesSkillPrompt, validateSkills } from "../scripts/validate-skills.js";
+import {
+  matchesSkillPrompt,
+  referencesObservationSkill,
+  validateSkills
+} from "../scripts/validate-skills.js";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -39,5 +43,22 @@ describe("project skills", () => {
     ["round-start", "Start the Discord image feedback round workflow."]
   ])("matches the %s skill for explicit and implicit prompt %s", (skillName, prompt) => {
     expect(matchesSkillPrompt(skillName, prompt)).toBe(true);
+  });
+
+  it("does not route the existing text-poll scan prompt to the conversation observer", () => {
+    const textPollPrompt = "Scan the Discord text poll for its first five messages.";
+
+    expect(matchesSkillPrompt("get-discord-polls", textPollPrompt)).toBe(true);
+    expect(matchesSkillPrompt("observe-discord-conversation", textPollPrompt)).toBe(false);
+  });
+
+  it.each([
+    ["canonical skill path", "Read skills/observe-discord-conversation/SKILL.md first."],
+    ["explicit invocation", "Use $observe-discord-conversation now."],
+    ["bare skill name", "Use observe-discord-conversation now."],
+    ["imperative invocation", "Invoke observe-discord-conversation for this scan."],
+    ["unrelated text", "Continue the current text-poll collection.", false]
+  ])("recognizes observation-skill integration through %s", (_kind, markdown, expected = true) => {
+    expect(referencesObservationSkill(markdown)).toBe(expected);
   });
 });

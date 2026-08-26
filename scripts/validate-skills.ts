@@ -45,7 +45,9 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
   "observe-discord-conversation": [
     ["read", "observe", "scan"],
     ["message", "conversation"],
-    ["boundary", "allowlisted", "discord"]
+    ["boundary"],
+    ["allowlisted"],
+    ["discord"]
   ],
   "round-start": [["start", "resume", "run"], ["round", "workflow"], ["discord"]],
   "submit-base-image": [["submit", "post", "start"], ["image"], ["feedback", "discord"]]
@@ -119,10 +121,15 @@ const OBSERVE_DISCORD_CONVERSATION_CONTRACTS = [
   "virtualization gap",
   "edited or deleted",
   "identity is missing or unstable",
+  "messages or attachments appear reordered",
   "destination does not match",
+  "missing-boundary",
+  "destination-mismatch",
   "Never automatically retry an uncertain observation.",
   "Do not reproduce its destination, boundary, message limit, or any CLI handoff/output"
 ] as const;
+
+const OBSERVATION_SKILL_NAME = "observe-discord-conversation";
 
 export function matchesSkillPrompt(skillName: string, prompt: string): boolean {
   if (!EXPECTED_SKILLS.includes(skillName as (typeof EXPECTED_SKILLS)[number])) {
@@ -135,6 +142,10 @@ export function matchesSkillPrompt(skillName: string, prompt: string): boolean {
   return IMPLICIT_TRIGGER_GROUPS[skillName as (typeof EXPECTED_SKILLS)[number]].every((group) =>
     group.some((term) => normalizedPrompt.includes(term))
   );
+}
+
+export function referencesObservationSkill(markdown: string): boolean {
+  return markdown.includes(OBSERVATION_SKILL_NAME);
 }
 
 export async function validateSkills(repositoryRoot: string): Promise<string[]> {
@@ -342,7 +353,7 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
 
   for (const integratedSkill of ["get-discord-polls", "round-start"] as const) {
     const skillMarkdown = await readFile(resolve(skillsRoot, integratedSkill, "SKILL.md"), "utf8");
-    if (skillMarkdown.includes("skills/observe-discord-conversation/SKILL.md")) {
+    if (referencesObservationSkill(skillMarkdown)) {
       issues.push(`${integratedSkill}: must not integrate the conversation observation skill.`);
     }
   }

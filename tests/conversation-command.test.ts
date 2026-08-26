@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { CONVERSATION_SOURCE_FAILURE_CATEGORIES } from "../src/constants.js";
 import type { DiscordChannelAllowlistStore } from "../src/config/discord-channel-allowlist.js";
 import { ConversationDestinationError } from "../src/conversation/discord-conversation-destination.js";
 import {
@@ -173,7 +174,14 @@ describe("executeConversationCommand", () => {
     expect(JSON.stringify(result)).not.toContain(privateValue);
   });
 
-  it.each(["login-interrupted", "virtualization-gap", "unstable-identity", "ambiguous-order"])(
+  it.each([
+    "login-interrupted",
+    "virtualization-gap",
+    "unstable-identity",
+    "ambiguous-order",
+    "missing-boundary",
+    "destination-mismatch"
+  ])(
     "accepts controlled source failure category %s without retrying",
     async (category) => {
       const handoff = recordingHandoff([]);
@@ -188,6 +196,12 @@ describe("executeConversationCommand", () => {
       expect(handoff.readRequestCount).toBe(0);
     }
   );
+
+  it("supports controlled failures for a missing boundary and destination mismatch", () => {
+    expect(CONVERSATION_SOURCE_FAILURE_CATEGORIES).toEqual(
+      expect.arrayContaining(["missing-boundary", "destination-mismatch"])
+    );
+  });
 
   it("rejects raw source failure reasons", async () => {
     const privateReason = "login failed at a private destination";

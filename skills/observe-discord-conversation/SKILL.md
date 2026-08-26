@@ -26,7 +26,7 @@ Private allowlist resolution is complete before browser navigation.
 
 ## Stop conditions
 
-Stop and submit `parse-conversation` in `source-failure` mode with only the applicable controlled category when login is interrupted, the boundary is missing, a virtualization gap prevents contiguous coverage, provider order is ambiguous, an identity is missing or unstable, a message appears edited or deleted, or the destination does not match. Never automatically retry an uncertain observation.
+Stop and submit `parse-conversation` in `source-failure` mode with only the applicable controlled category: `login-interrupted`, `missing-boundary`, `virtualization-gap`, `unstable-identity`, `ambiguous-order`, or `destination-mismatch`. Do so when login is interrupted, the boundary is missing, a virtualization gap prevents contiguous coverage, provider order is ambiguous, an identity is missing or unstable, messages or attachments appear reordered, a message appears edited or deleted, or the destination does not match. Never automatically retry an uncertain observation.
 
 Never download, paste, copy to the clipboard, acquire, decode, validate, persist, open, follow, or fetch an attachment. Never call Discord REST, Gateway, CDN, webhook, bot, or user-token interfaces. Never inspect cookies, browser storage, hidden page state, credentials, internal APIs, unrelated history, or hidden channels. Do not crawl beyond the bounded visible segment.
 
