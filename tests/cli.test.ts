@@ -140,16 +140,14 @@ describe("executeCommand", () => {
     temporaryDirectories.push(directory);
     const roundsRoot = join(directory, "rounds");
     const store = new JsonRoundStateStore(roundsRoot);
-    const olderResult = await validPng(0);
-    const latestResult = await validPng(255);
     for (const [roundId, startedAt, bytes] of [
-      ["R001", "2026-08-24T10:00:00.000Z", olderResult],
-      ["R002", "2026-08-24T11:00:00.000Z", latestResult]
+      ["R001", "2026-08-24T10:00:00.000Z", "older result"],
+      ["R002", "2026-08-24T11:00:00.000Z", "latest result"]
     ] as const) {
       const capsule = join(roundsRoot, roundId);
       await mkdir(capsule, { recursive: true });
       const resultImagePath = join(capsule, "result-image.png");
-      await writeFile(resultImagePath, bytes);
+      await writeFile(resultImagePath, bytes, "utf8");
       await store.save({
         ...createRound({
           id: roundId,
@@ -183,7 +181,7 @@ describe("executeCommand", () => {
       parentRoundId: "R002",
       channelUrl: ALLOWED_CHANNEL
     });
-    expect(await readFile(continued!.baseImagePath)).toEqual(latestResult);
+    expect(await readFile(continued!.baseImagePath, "utf8")).toBe("latest result");
 
     expect(
       await runCommand(
@@ -291,7 +289,7 @@ describe("executeCommand", () => {
     const sourceCapsule = join(roundsRoot, "R001");
     await mkdir(sourceCapsule, { recursive: true });
     const resultImagePath = join(sourceCapsule, "result-image.png");
-    await writeFile(resultImagePath, await validPng());
+    await writeFile(resultImagePath, "result", "utf8");
     await backingStore.save({
       ...createRound({
         id: "R001",
@@ -764,8 +762,8 @@ function runCommand(
   });
 }
 
-function validPng(red = 0): Promise<Buffer> {
+function validPng(): Promise<Buffer> {
   return sharp({
-    create: { width: 1, height: 1, channels: 4, background: { r: red, g: 0, b: 0, alpha: 1 } }
+    create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } }
   }).png().toBuffer();
 }
