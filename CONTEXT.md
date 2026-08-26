@@ -1,6 +1,6 @@
 # Discord Image Feedback
 
-This context describes one collaborative round in which participants evaluate a visible base image, propose textual changes, vote, and produce one edited result.
+This context describes one collaborative round in which a Base Image is posted, the first configured Discord text messages are captured, and one controlled generation outcome is returned.
 
 ## Language
 
@@ -13,28 +13,40 @@ The bounded collaboration that begins with one Base Image and ends with one Resu
 _Avoid_: Session, job, workflow
 
 **Participant**:
-A Discord member who can submit feedback or vote in the allowlisted channel during a Feedback Round.
+A Discord member whose ordinary text message may be captured after the round boundary. One Participant may occupy multiple message slots.
 _Avoid_: User, reviewer
 
-**Feedback Submission**:
-A Participant's current text describing a requested change to the Base Image. A newer submission replaces that Participant's earlier submission before collection closes.
-_Avoid_: Comment, prompt, vote
+**Text Poll**:
+The marker-bounded collection of the first configured number of ordinary non-empty Discord messages after the Base Image post. It has no voting UI, author deduplication, prefix, or deadline.
+_Avoid_: Native poll, survey, ballot
 
-**Feedback Candidate**:
-A validated Feedback Submission assigned a stable short label for voting.
-_Avoid_: Poll answer, option text
+**Captured Message**:
+The exact first-observed visible text and stable identity of one eligible Discord message in the Text Poll. Captured Messages remain frozen in arrival order as the source for one Synthesized Prompt.
+_Avoid_: Candidate, vote, selected feedback
 
-**Feedback Poll**:
-The finalized Discord poll through which Participants select compatible Feedback Candidates.
-_Avoid_: Survey, approval poll
+**Synthesized Prompt**:
+The single sanitized visual-edit instruction derived from every frozen Captured Message, posted with the closed marker, persisted once, and used unchanged for the image edit.
+_Avoid_: Feedback summary, regenerated prompt, raw message compilation
 
-**Selected Feedback**:
-The exact full text of the highest-ranked nonzero Feedback Candidates chosen by the Feedback Poll.
-_Avoid_: Summary, winning prompt
+**Durable Round State**:
+The restart-critical JSON record and image artifacts stored beneath the worktree-local `.state/` directory.
+_Avoid_: Runtime payload, database
+
+**Round State Capsule**:
+The isolated durable state owned by one Feedback Round. A capsule never shares a mutable JSON record or image artifact with another round.
+_Avoid_: Global round file, shared state bucket
+
+**Discord Channel Allowlist**:
+The single owner-selected Discord channel URL persisted privately in `.state/discord-channel-allowlist.json` and enforced by every round command.
+_Avoid_: Hardcoded channel, environment channel
 
 **Result Image**:
-The single edited image produced from the Base Image and Selected Feedback.
+The single edited image produced when the image-edit attempt succeeds.
 _Avoid_: Generation, output asset
+
+**Generation Outcome**:
+The confirmed result of the single image-edit attempt: `succeeded` with one Result Image, `refused`, or `failed`. Discord receives exactly one controlled public representation of this outcome.
+_Avoid_: Raw provider response, diagnostic
 
 **Needs Attention**:
 A paused safety outcome indicating that external state is ambiguous and a person must reconcile it before any action is repeated.

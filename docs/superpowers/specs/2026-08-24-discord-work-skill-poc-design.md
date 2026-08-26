@@ -2,7 +2,7 @@
 
 Date: 2026-08-24
 
-Status: Approved design; awaiting written-spec review before implementation.
+Status: Superseded by `2026-08-24-chat-triggered-five-message-round-design.md`.
 
 ## Objective
 
@@ -22,7 +22,7 @@ Version one supports:
 
 - one allowlisted Discord channel;
 - one active feedback round;
-- one owner-supplied base image;
+- one owner-supplied base image attached in ChatGPT or identified by an exact allowlisted Discord message link;
 - one active text submission per participant;
 - up to ten feedback candidates;
 - one multi-select native Discord poll;
@@ -93,15 +93,15 @@ Before worktree creation, `.worktrees/` must be added to `.gitignore` and verifi
 
 ### 1. Submit the base image
 
-The owner gives ChatGPT Work a local image file and selects the locally configured Discord channel.
+The owner either attaches an image in the current ChatGPT conversation or gives ChatGPT Work the exact Discord message link containing the image. The Discord source must be in the locally configured channel and contain exactly one supported image. The acquired image is staged under gitignored `.runtime/base-images/` before the round begins.
 
 `submit-base-image`:
 
-1. accepts one PNG, JPEG, or WebP file;
+1. accepts one PNG, JPEG, or WebP from either approved source and rejects ambiguous or unverifiable input;
 2. creates a stable round ID;
 3. posts `ROUND <id> — BASE IMAGE` with the image;
 4. posts participant instructions and the feedback deadline; and
-5. records the base-image path, channel URL, and base-image message URL.
+5. records the base-image path, channel URL, base-image message URL, visible message timestamp as the authoritative opening time, and a deadline exactly one hour later.
 
 The round enters `collecting-feedback`.
 
@@ -187,7 +187,7 @@ The deterministic CLI validates and reduces these observations. The model must n
 
 Inputs:
 
-- local base-image path;
+- ChatGPT image attachment or exact allowlisted Discord message link, resolved to a staged local base-image path;
 - local allowlisted channel configuration; and
 - optional round title.
 
@@ -349,7 +349,7 @@ Only after the supervised path passes may a five-minute scheduled Work task be t
 ## Acceptance criteria
 
 - The canonical top-level skill structure and discovery symlinks exist.
-- All fixed values live in `src/constants.ts`.
+- All fixed product values live in `src/constants.ts`; phase literals remain typed domain vocabulary.
 - JSON state resides inside the implementation worktree under `.runtime/` and is ignored by Git.
 - The base image is visible to participants before feedback collection.
 - Each participant has one replaceable feedback submission.

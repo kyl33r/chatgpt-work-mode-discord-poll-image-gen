@@ -1,0 +1,4 @@
+interface:
+  display_name: "Get Discord Polls"
+  short_description: "Scan and close a bounded Discord text poll"
+  default_prompt: "Use $get-discord-polls to scan the bounded Discord text poll and close it after the configured message count."
