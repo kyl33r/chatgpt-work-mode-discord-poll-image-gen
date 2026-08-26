@@ -330,7 +330,6 @@ async function writeWithDeadline(
           () => resolve(false),
           FEEDBACK_ACQUISITION_EVALUATION_SINK_TIMEOUT_MS
         );
-        timeout.unref();
       })
     ]);
   } catch {

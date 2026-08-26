@@ -357,15 +357,15 @@ async function collectRoundMessages(
     ).length,
     0
   ) ?? 0;
-  const selectedImageCount = batchSelectedImageCount;
-  const acceptedArtifactCount = batchAcceptedArtifactCount;
-  const collectionEvaluation = selectedImageCount > 0
+  let selectedImageCount = batchSelectedImageCount;
+  let acceptedArtifactCount = batchAcceptedArtifactCount;
+  let collectionEvaluation = selectedImageCount > 0
     ? startCommandEvaluation(
       evaluation,
       selectedImageCount > 1 ? "multiple-valid-images" : "single-valid-image"
     )
     : undefined;
-  const endCollectionPhase = startCommandEvaluationPhase(
+  let endCollectionPhase = startCommandEvaluationPhase(
     collectionEvaluation,
     "collection-handoff"
   );
@@ -373,6 +373,7 @@ async function collectRoundMessages(
   let duplicateArtifactCount = 0;
   let skippedArtifactCount = 0;
   let reorderedArtifactCount = 0;
+  let collectionFaultScenarioCode = "artifact-validation-failed";
   const validatedExistingMessages = round.capturedMessages.map((message) => ({
     ...message,
     contextImages: message.contextImages.map((image) => ({ ...image }))
@@ -393,6 +394,19 @@ async function collectRoundMessages(
       observed: input.messages
     });
     const candidateBatch = feedbackCaptureBatchFromPlan(round.baseMessageUrl, planned);
+    if (!round.feedbackCaptureBatch && planned.length > 0) {
+      selectedImageCount = planned.length;
+      acceptedArtifactCount = 0;
+      collectionEvaluation = startCommandEvaluation(
+        evaluation,
+        selectedImageCount > 1 ? "multiple-valid-images" : "single-valid-image"
+      );
+      endCollectionPhase = startCommandEvaluationPhase(
+        collectionEvaluation,
+        "collection-handoff"
+      );
+      collectionFaultScenarioCode = "capture-batch-missing";
+    }
     if (planned.length > 0 || round.feedbackCaptureBatch) {
       if (
         !round.feedbackCaptureBatch ||
@@ -405,6 +419,7 @@ async function collectRoundMessages(
           skippedArtifactCount = planned.length;
         } else if (!hasSameFeedbackCaptureSelection(round.feedbackCaptureBatch, candidateBatch)) {
           reorderedArtifactCount = 1;
+          collectionFaultScenarioCode = "selection-order-changed";
         } else {
           skippedArtifactCount = round.feedbackCaptureBatch.messages.reduce(
             (count, message) => count + message.selectedAttachments.filter(
@@ -484,6 +499,7 @@ async function collectRoundMessages(
         reason,
         collectionEvaluation,
         endCollectionPhase,
+        "selection-order-changed",
         collectionEvaluationSummary({
           selectedImageCount,
           acceptedArtifactCount,
@@ -501,6 +517,7 @@ async function collectRoundMessages(
       reason,
       collectionEvaluation,
       endCollectionPhase,
+      collectionFaultScenarioCode,
       collectionEvaluationSummary({
         selectedImageCount,
         acceptedArtifactCount,
@@ -534,6 +551,7 @@ async function collectRoundMessages(
       reason,
       collectionEvaluation,
       endCollectionPhase,
+      "selection-order-changed",
       collectionEvaluationSummary({
         selectedImageCount,
         acceptedArtifactCount,
@@ -1004,14 +1022,10 @@ async function requireCollectionAttentionWithEvaluation(
   reason: string,
   evaluation: FeedbackAcquisitionEvaluationScenario | undefined,
   endCollectionPhase: () => void,
+  scenarioCode: string,
   summary: CommandEvaluationSummary
 ): Promise<{ action: "needs-attention"; roundId: string; reason: string }> {
   endCollectionPhase();
-  const scenarioCode = summary.reorderedArtifactCount > 0
-    ? "selection-order-changed"
-    : summary.duplicateArtifactCount > 0 || summary.skippedArtifactCount > 0
-      ? "artifact-validation-failed"
-      : "selection-order-changed";
   try {
     evaluation?.classify(scenarioCode);
   } catch {

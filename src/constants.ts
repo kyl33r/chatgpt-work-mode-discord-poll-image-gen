@@ -93,6 +93,7 @@ export const FEEDBACK_ACQUISITION_EVALUATION_SCENARIO_CODES = [
   "browser-copy-control-missing",
   "visible-attachment-ambiguous",
   "selection-order-changed",
+  "capture-batch-missing",
   "interrupted-before-intent",
   "interrupted-after-intent-before-copy",
   "interrupted-after-copy-before-capture",

@@ -84,6 +84,7 @@ describe("round CLI lifecycle", () => {
       },
       store
     );
+    const roundBeforeCapturePlan = (await store.get("RCLIP"))!;
     await runCommand(
       "plan-feedback-captures",
       { roundId: "RCLIP", boundaryMessageUrl, messages },
@@ -194,6 +195,37 @@ describe("round CLI lifecycle", () => {
       successfulFullDecodeCount: 0,
       browserCopyActionCount: 2,
       skippedArtifactCount: 1,
+      recovery: "needs-attention"
+    })]);
+
+    const missingBatchStore = new JsonRoundStateStore(join(directory, "missing-batch-rounds"));
+    await missingBatchStore.save(roundBeforeCapturePlan);
+    const missingBatchRecords: FeedbackAcquisitionEvaluationRecord[] = [];
+    await expect(runCommand(
+      "collect-messages",
+      { roundId: "RCLIP", boundaryMessageUrl, messages },
+      missingBatchStore,
+      {
+        artifacts,
+        evaluation: new FeedbackAcquisitionEvaluationRecorder(
+          new SequenceMonotonicClock([40, 41, 42, 43]),
+          {
+            write: async (record) => {
+              missingBatchRecords.push(record);
+              return true;
+            }
+          }
+        )
+      }
+    )).resolves.toMatchObject({ action: "needs-attention" });
+    expect(missingBatchRecords).toEqual([expect.objectContaining({
+      scenarioCode: "capture-batch-missing",
+      completion: "incomplete",
+      expectedSelectedImageCount: 2,
+      acceptedArtifactCount: 0,
+      successfulFullDecodeCount: 0,
+      browserCopyActionCount: 0,
+      skippedArtifactCount: 2,
       recovery: "needs-attention"
     })]);
 

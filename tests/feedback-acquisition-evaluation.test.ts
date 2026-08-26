@@ -1,6 +1,9 @@
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -15,6 +18,7 @@ import {
 } from "../src/evaluation/feedback-acquisition-evaluation.js";
 
 const temporaryDirectories: string[] = [];
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })));
@@ -242,6 +246,45 @@ describe("feedback acquisition evaluation", () => {
     ]);
 
     expect(outcome).toEqual({ completion: "complete", reportWritten: false });
+  });
+
+  it("keeps a CLI subprocess alive until a stalled sink yields the production result", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "feedback-evaluation-cli-"));
+    temporaryDirectories.push(directory);
+    const scriptPath = join(directory, "stalled-cli.mts");
+    const cliUrl = pathToFileURL(resolve("src/cli.ts")).href;
+    const evaluationUrl = pathToFileURL(
+      resolve("src/evaluation/feedback-acquisition-evaluation.ts")
+    ).href;
+    const roundStateUrl = pathToFileURL(resolve("src/round/round-state.ts")).href;
+    const lockUrl = pathToFileURL(resolve("src/workflow-lock.ts")).href;
+    await writeFile(scriptPath, `
+import { executeCommand } from ${JSON.stringify(cliUrl)};
+import { FeedbackAcquisitionEvaluationRecorder } from ${JSON.stringify(evaluationUrl)};
+import { applyRoundEvent, createRound } from ${JSON.stringify(roundStateUrl)};
+import { InMemoryWorkflowLock } from ${JSON.stringify(lockUrl)};
+let round = createRound({ id: "SUBPROCESS", baseImagePath: "base", channelUrl: "https://discord.test/channels/allowlisted", messageLimit: 5 });
+round = applyRoundEvent(round, { type: "base-submission-started" });
+round = applyRoundEvent(round, { type: "base-submission-confirmed", baseMessageUrl: "base-message", collectionStartedAt: "2026-08-26T10:00:00.000Z" });
+round = applyRoundEvent(round, { type: "feedback-captures-planned", feedbackCaptureBatch: { boundaryMessageUrl: "base-message", messages: [{ messageUrl: "message-1", messageOrdinal: 1, selectedAttachments: [{ attachmentIndex: 0, mediaType: "image/png", status: "selected" }] }] } });
+round = applyRoundEvent(round, { type: "feedback-copy-intent-recorded", messageOrdinal: 1, attachmentIndex: 0, expectedClipboardChangeCount: 4 });
+const store = { get: async (id) => id === round.id ? round : undefined, list: async () => [round], save: async (next) => { round = next; } };
+const artifacts = { acceptFeedbackImageBytes: async () => "accepted", acceptBaseImage: async () => "", acceptResultImage: async () => "", requireResultImage: async () => "", requireFeedbackImage: async () => "", copyResultAsBase: async () => "", discardUnpersistedBase: async () => undefined };
+const result = await executeCommand("capture-feedback-image", { roundId: "SUBPROCESS", messageOrdinal: 1, attachmentIndex: 0 }, store, { allowlist: { getAll: async () => ["https://discord.test/channels/allowlisted"], replace: async () => undefined }, artifacts, clipboard: { getChangeCount: async () => 4, readSingleImage: async () => ({ observedChangeCount: 5, pngBytes: new Uint8Array([1]) }) }, evaluation: new FeedbackAcquisitionEvaluationRecorder({ now: (() => { let value = 0; return () => value++; })() }, { write: () => new Promise(() => undefined) }), workflowLock: new InMemoryWorkflowLock() });
+process.stdout.write(JSON.stringify(result));
+`, { mode: 0o600 });
+
+    const startedAt = performance.now();
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ["--import", "tsx", scriptPath],
+      { timeout: 2_000 }
+    );
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(JSON.parse(stdout)).toEqual({ action: "captured" });
+    expect(elapsedMs).toBeGreaterThanOrEqual(40);
+    expect(elapsedMs).toBeLessThan(1_500);
   });
 });
 
