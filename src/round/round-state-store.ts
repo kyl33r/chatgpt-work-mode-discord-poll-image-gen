@@ -1,7 +1,12 @@
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { ROUND_SCHEMA_VERSION, ROUND_STATE_FILE_NAME } from "../constants.js";
+import {
+  FEEDBACK_IMAGE_LIMIT_PER_ROUND,
+  FEEDBACK_IMAGE_LIMIT_PER_MESSAGE,
+  ROUND_SCHEMA_VERSION,
+  ROUND_STATE_FILE_NAME
+} from "../constants.js";
 import { assertSafeRoundId, roundCapsuleDirectory } from "./round-paths.js";
 import type { RoundState } from "./round-state.js";
 
@@ -162,6 +167,10 @@ function isRoundState(value: unknown, expectedRoundId: string): value is RoundSt
     !Array.isArray(value.capturedMessages) ||
     value.capturedMessages.length > (value.messageLimit as number) ||
     !value.capturedMessages.every(isCapturedMessage) ||
+    value.capturedMessages.reduce(
+      (total, message) => total + (message as { contextImages: unknown[] }).contextImages.length,
+      0
+    ) > FEEDBACK_IMAGE_LIMIT_PER_ROUND ||
     !isOptionalString(value.baseMessageUrl) ||
     !isOptionalString(value.collectionStartedAt) ||
     !isOptionalString(value.synthesizedPrompt) ||
@@ -179,10 +188,34 @@ function isCapturedMessage(value: unknown): boolean {
   if (!isRecord(value)) {
     return false;
   }
-  const keys = ["messageUrl", "authorId", "authorName", "timestamp", "text"];
-  return (
+  const keys = ["messageUrl", "authorId", "authorName", "timestamp", "text", "contextImages"];
+  if (!(
     Object.keys(value).every((key) => keys.includes(key)) &&
-    keys.every((key) => typeof value[key] === "string")
+    keys.slice(0, 5).every((key) => typeof value[key] === "string") &&
+    Array.isArray(value.contextImages) &&
+    value.contextImages.length <= FEEDBACK_IMAGE_LIMIT_PER_MESSAGE &&
+    value.contextImages.every(isContextImage)
+  )) {
+    return false;
+  }
+  const contextImages = value.contextImages as unknown[];
+  return contextImages.every(
+    (image, index) =>
+      index === 0 ||
+      (image as { attachmentIndex: number }).attachmentIndex >
+        (contextImages[index - 1] as { attachmentIndex: number }).attachmentIndex
+  );
+}
+
+function isContextImage(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    Object.keys(value).every((key) => key === "attachmentIndex" || key === "imagePath") &&
+    Object.keys(value).length === 2 &&
+    Number.isInteger(value.attachmentIndex) &&
+    (value.attachmentIndex as number) >= 0 &&
+    typeof value.imagePath === "string" &&
+    value.imagePath.length > 0
   );
 }
 

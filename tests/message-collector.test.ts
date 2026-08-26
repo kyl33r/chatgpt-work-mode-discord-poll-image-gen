@@ -3,6 +3,31 @@ import { describe, expect, it } from "vitest";
 import { collectMessages } from "../src/round/message-collector.js";
 
 describe("collectMessages", () => {
+  it("selects participant images in message and attachment order within both limits", () => {
+    const result = collectMessages({
+      roundId: "R001",
+      boundaryMessageUrl: "boundary",
+      collectionStartedAt: "2026-08-24T10:00:00.000Z",
+      limit: 5,
+      existing: [],
+      observed: [
+        withAttachments(message("1", "alice", "one", "10:01"), [image(0, "1-a.png"), image(1, "1-b.jpg"), image(2, "1-c.webp")]),
+        withAttachments(message("2", "bob", "two", "10:02"), [image(0, "2-a.webp"), unsupported(1), image(2, "2-b.png")]),
+        withAttachments(message("3", "carol", "three", "10:03"), [image(0, "3-a.png")]),
+        withAttachments(message("4", "dan", "four", "10:04"), [image(0, "4-a.png")]),
+        message("5", "eve", "five", "10:05")
+      ]
+    });
+
+    expect(result.captured.map((entry) => entry.contextImages)).toEqual([
+      [contextImage(0, "1-a.png"), contextImage(1, "1-b.jpg")],
+      [contextImage(0, "2-a.webp"), contextImage(2, "2-b.png")],
+      [contextImage(0, "3-a.png")],
+      [],
+      []
+    ]);
+  });
+
   it("freezes the first five arbitrary text messages in arrival order", () => {
     const result = collectMessages({
       roundId: "R001",
@@ -169,7 +194,8 @@ function message(messageUrl: string, authorId: string, text: string, time: strin
     authorId,
     authorName: authorId,
     timestamp: `2026-08-24T${time}:00.000Z`,
-    text
+    text,
+    attachments: []
   };
 }
 
@@ -179,6 +205,23 @@ function captured(messageUrl: string, authorId: string, text: string, time: stri
     authorId,
     authorName: authorId,
     timestamp: `2026-08-24T${time}:00.000Z`,
-    text
+    text,
+    contextImages: []
   };
+}
+
+function withAttachments<T>(messageValue: T, attachments: unknown[]) {
+  return { ...messageValue, attachments };
+}
+
+function image(attachmentIndex: number, imagePath: string) {
+  return { attachmentIndex, mediaType: `image/${imagePath.endsWith(".jpg") ? "jpeg" : imagePath.endsWith(".webp") ? "webp" : "png"}`, imagePath };
+}
+
+function unsupported(attachmentIndex: number) {
+  return { attachmentIndex, mediaType: "application/pdf", imagePath: "ignored.pdf" };
+}
+
+function contextImage(attachmentIndex: number, imagePath: string) {
+  return { attachmentIndex, imagePath };
 }

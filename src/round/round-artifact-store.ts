@@ -1,14 +1,21 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, readdir, realpath, rm, rmdir, unlink } from "node:fs/promises";
-import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { chmod, copyFile, lstat, mkdir, readFile, readdir, realpath, rm, rmdir, unlink } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { ROUND_BASE_IMAGE_BASENAME, SUPPORTED_IMAGE_EXTENSIONS } from "../constants.js";
+import {
+  ROUND_BASE_IMAGE_BASENAME,
+  ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN,
+  ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME,
+  SUPPORTED_IMAGE_EXTENSIONS
+} from "../constants.js";
 import { assertSafeRoundId, roundCapsuleDirectory } from "./round-paths.js";
 
 export interface RoundArtifactStore {
   acceptBaseImage(roundId: string, candidatePath: string): Promise<string>;
   acceptResultImage(roundId: string, candidatePath: string): Promise<string>;
   requireResultImage(roundId: string, storedPath: string): Promise<string>;
+  acceptFeedbackImage(roundId: string, candidatePath: string): Promise<string>;
+  requireFeedbackImage(roundId: string, storedPath: string): Promise<string>;
   copyResultAsBase(
     sourceRoundId: string,
     targetRoundId: string,
@@ -42,6 +49,16 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
       storedPath,
       "Recorded result image is missing or unsupported."
     );
+  }
+
+  public async acceptFeedbackImage(roundId: string, candidatePath: string): Promise<string> {
+    const accepted = await this.requireValidFeedbackImage(roundId, candidatePath);
+    await chmod(accepted, 0o600);
+    return accepted;
+  }
+
+  public requireFeedbackImage(roundId: string, storedPath: string): Promise<string> {
+    return this.requireValidFeedbackImage(roundId, storedPath);
   }
 
   public async copyResultAsBase(
@@ -141,4 +158,40 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     }
     return resolvedPath;
   }
+
+  private async requireValidFeedbackImage(
+    roundId: string,
+    candidatePath: string
+  ): Promise<string> {
+    const errorMessage =
+      "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule.";
+    const resolvedPath = await this.requireCapsuleImage(roundId, candidatePath, errorMessage);
+    const resolvedCapsule = await realpath(roundCapsuleDirectory(this.roundsRoot, roundId));
+    if (
+      dirname(relative(resolvedCapsule, resolvedPath)) !== ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME ||
+      !ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN.test(basename(resolvedPath))
+    ) {
+      throw new Error(errorMessage);
+    }
+    const bytes = await readFile(resolvedPath);
+    if (!hasMatchingImageSignature(bytes, extname(resolvedPath).toLowerCase())) {
+      throw new Error(errorMessage);
+    }
+    return resolvedPath;
+  }
+}
+
+function hasMatchingImageSignature(bytes: Buffer, extension: string): boolean {
+  if (extension === ".png") {
+    return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  }
+  if (extension === ".jpg" || extension === ".jpeg") {
+    return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  }
+  return (
+    extension === ".webp" &&
+    bytes.length >= 12 &&
+    bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
+    bytes.subarray(8, 12).toString("ascii") === "WEBP"
+  );
 }

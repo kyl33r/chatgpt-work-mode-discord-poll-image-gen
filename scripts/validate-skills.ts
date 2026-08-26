@@ -114,6 +114,15 @@ export function matchesSkillPrompt(skillName: string, prompt: string): boolean {
 export async function validateSkills(repositoryRoot: string): Promise<string[]> {
   const issues: string[] = [];
   const agentInstructions = await readFile(resolve(repositoryRoot, "AGENTS.md"), "utf8");
+  const constantsSource = await readFile(resolve(repositoryRoot, "src/constants.ts"), "utf8");
+  for (const constant of [
+    "FEEDBACK_IMAGE_LIMIT_PER_MESSAGE = 2",
+    "FEEDBACK_IMAGE_LIMIT_PER_ROUND = 5"
+  ]) {
+    if (!constantsSource.includes(constant)) {
+      issues.push(`src/constants.ts is missing configured image limit: ${constant}`);
+    }
+  }
   for (const requiredPolicy of [
     "Never expose secrets or private identifiers",
     "The sole canonical project-skill source is `<project-root>/skills/`",
@@ -233,6 +242,30 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
       (!skillMarkdown.includes("`authorId`") || !skillMarkdown.includes("`authorName`"))
     ) {
       issues.push("get-discord-polls: exact message author fields are missing.");
+    }
+    if (skillName === "get-discord-polls") {
+      for (const contract of [
+        "FEEDBACK_IMAGE_LIMIT_PER_MESSAGE",
+        "FEEDBACK_IMAGE_LIMIT_PER_ROUND",
+        "supported visible media-download surface",
+        "bare CDN URL",
+        "feedback-images/",
+        "message-<one-based-slot>-attachment-<attachmentIndex>.<ext>",
+        "attachmentIndex",
+        "never redownload",
+        "Participant reference images are supporting visual context"
+      ]) {
+        if (!skillMarkdown.includes(contract)) {
+          issues.push(`get-discord-polls: participant-image contract ${contract} is missing.`);
+        }
+      }
+    }
+    if (skillName === "image-gen") {
+      for (const contract of ["Base Image first", "contextImagePaths", "supporting visual context"] ) {
+        if (!skillMarkdown.includes(contract)) {
+          issues.push(`image-gen: ordered participant-image contract ${contract} is missing.`);
+        }
+      }
     }
     if (
       skillName === "round-start" &&
