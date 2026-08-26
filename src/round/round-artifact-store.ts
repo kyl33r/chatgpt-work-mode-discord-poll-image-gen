@@ -16,8 +16,18 @@ export interface RoundArtifactStore {
   acceptBaseImage(roundId: string, candidatePath: string): Promise<string>;
   acceptResultImage(roundId: string, candidatePath: string): Promise<string>;
   requireResultImage(roundId: string, storedPath: string): Promise<string>;
-  acceptFeedbackImage(roundId: string, candidatePath: string): Promise<string>;
-  requireFeedbackImage(roundId: string, storedPath: string): Promise<string>;
+  acceptFeedbackImage(
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    candidatePath: string
+  ): Promise<string>;
+  requireFeedbackImage(
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    storedPath: string
+  ): Promise<string>;
   copyResultAsBase(
     sourceRoundId: string,
     targetRoundId: string,
@@ -55,14 +65,29 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     );
   }
 
-  public async acceptFeedbackImage(roundId: string, candidatePath: string): Promise<string> {
-    const accepted = await this.requireValidFeedbackImage(roundId, candidatePath);
+  public async acceptFeedbackImage(
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    candidatePath: string
+  ): Promise<string> {
+    const accepted = await this.requireValidFeedbackImage(
+      roundId,
+      messageOrdinal,
+      attachmentIndex,
+      candidatePath
+    );
     await chmod(accepted, 0o600);
     return accepted;
   }
 
-  public requireFeedbackImage(roundId: string, storedPath: string): Promise<string> {
-    return this.requireValidFeedbackImage(roundId, storedPath);
+  public requireFeedbackImage(
+    roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
+    storedPath: string
+  ): Promise<string> {
+    return this.requireValidFeedbackImage(roundId, messageOrdinal, attachmentIndex, storedPath);
   }
 
   public async copyResultAsBase(
@@ -184,15 +209,23 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
 
   private async requireValidFeedbackImage(
     roundId: string,
+    messageOrdinal: number,
+    attachmentIndex: number,
     candidatePath: string
   ): Promise<string> {
     const errorMessage =
       "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule.";
     const resolvedPath = await this.requireCapsuleImage(roundId, candidatePath, errorMessage);
     const resolvedCapsule = await realpath(roundCapsuleDirectory(this.roundsRoot, roundId));
+    const expectedName = `message-${messageOrdinal}-attachment-${attachmentIndex}${extname(resolvedPath).toLowerCase()}`;
     if (
+      !Number.isInteger(messageOrdinal) ||
+      messageOrdinal <= 0 ||
+      !Number.isInteger(attachmentIndex) ||
+      attachmentIndex < 0 ||
       dirname(relative(resolvedCapsule, resolvedPath)) !== ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME ||
-      !ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN.test(basename(resolvedPath))
+      !ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN.test(basename(resolvedPath)) ||
+      basename(resolvedPath) !== expectedName
     ) {
       throw new Error(errorMessage);
     }
@@ -222,15 +255,80 @@ async function isDecodableImageOfExpectedFormat(path: string): Promise<boolean> 
 
 function hasMatchingImageSignature(bytes: Buffer, extension: string): boolean {
   if (extension === ".png") {
-    return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    return isStructurallyCompletePng(bytes);
   }
   if (extension === ".jpg" || extension === ".jpeg") {
-    return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    return isStructurallyCompleteJpeg(bytes);
   }
+  return extension === ".webp" && isStructurallyCompleteWebp(bytes);
+}
+
+function isStructurallyCompletePng(bytes: Buffer): boolean {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (bytes.length < 45 || !bytes.subarray(0, 8).equals(signature)) {
+    return false;
+  }
+  let offset = 8;
+  let sawHeader = false;
+  let sawImageData = false;
+  while (offset + 12 <= bytes.length) {
+    const dataLength = bytes.readUInt32BE(offset);
+    const chunkEnd = offset + 12 + dataLength;
+    if (chunkEnd > bytes.length) {
+      return false;
+    }
+    const type = bytes.subarray(offset + 4, offset + 8).toString("ascii");
+    if (!sawHeader) {
+      if (type !== "IHDR" || dataLength !== 13) {
+        return false;
+      }
+      sawHeader = bytes.readUInt32BE(offset + 8) > 0 && bytes.readUInt32BE(offset + 12) > 0;
+    } else if (type === "IDAT") {
+      sawImageData = true;
+    } else if (type === "IEND") {
+      return dataLength === 0 && sawHeader && sawImageData && chunkEnd === bytes.length;
+    }
+    offset = chunkEnd;
+  }
+  return false;
+}
+
+function isStructurallyCompleteJpeg(bytes: Buffer): boolean {
+  if (
+    bytes.length < 8 ||
+    bytes[0] !== 0xff ||
+    bytes[1] !== 0xd8 ||
+    bytes.at(-2) !== 0xff ||
+    bytes.at(-1) !== 0xd9
+  ) {
+    return false;
+  }
+  let sawFrame = false;
+  let sawScan = false;
+  for (let index = 2; index < bytes.length - 1; index += 1) {
+    if (bytes[index] !== 0xff) {
+      continue;
+    }
+    const marker = bytes[index + 1];
+    sawFrame ||= marker !== undefined && marker >= 0xc0 && marker <= 0xc3;
+    sawScan ||= marker === 0xda;
+  }
+  return sawFrame && sawScan;
+}
+
+function isStructurallyCompleteWebp(bytes: Buffer): boolean {
+  if (
+    bytes.length < 20 ||
+    bytes.subarray(0, 4).toString("ascii") !== "RIFF" ||
+    bytes.readUInt32LE(4) + 8 !== bytes.length ||
+    bytes.subarray(8, 12).toString("ascii") !== "WEBP"
+  ) {
+    return false;
+  }
+  const chunkType = bytes.subarray(12, 16).toString("ascii");
+  const chunkLength = bytes.readUInt32LE(16);
   return (
-    extension === ".webp" &&
-    bytes.length >= 12 &&
-    bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
-    bytes.subarray(8, 12).toString("ascii") === "WEBP"
+    (chunkType === "VP8 " || chunkType === "VP8L" || chunkType === "VP8X") &&
+    20 + chunkLength + (chunkLength % 2) === bytes.length
   );
 }

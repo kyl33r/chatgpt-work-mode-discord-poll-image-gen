@@ -99,6 +99,22 @@ describe("collectMessages", () => {
     ).toThrow("Message observations are not in Discord arrival order.");
   });
 
+  it("fails closed when message timestamps cannot prove persisted order", () => {
+    expect(() =>
+      collectMessages({
+        roundId: "R001",
+        boundaryMessageUrl: "boundary",
+        collectionStartedAt: "2026-08-24T10:00:00.000Z",
+        limit: 5,
+        existing: [],
+        observed: [
+          message("1", "alice", "first", "10:01"),
+          message("2", "bob", "second", "10:01")
+        ]
+      })
+    ).toThrow("Message observations are not in Discord arrival order.");
+  });
+
   it("fails closed when a rescan discovers an earlier message after later ones were persisted", () => {
     expect(() =>
       collectMessages({

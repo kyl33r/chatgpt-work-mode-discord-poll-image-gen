@@ -167,6 +167,7 @@ function isRoundState(value: unknown, expectedRoundId: string): value is RoundSt
     !Array.isArray(value.capturedMessages) ||
     value.capturedMessages.length > (value.messageLimit as number) ||
     !value.capturedMessages.every(isCapturedMessage) ||
+    !hasStableCapturedMessageOrder(value.capturedMessages) ||
     value.capturedMessages.reduce(
       (total, message) => total + (message as { contextImages: unknown[] }).contextImages.length,
       0
@@ -180,6 +181,36 @@ function isRoundState(value: unknown, expectedRoundId: string): value is RoundSt
     !isGenerationOutcome(value.generationOutcome)
   ) {
     return false;
+  }
+  return true;
+}
+
+function hasStableCapturedMessageOrder(messages: unknown[]): boolean {
+  const messageUrls = new Set<string>();
+  const imagePaths = new Set<string>();
+  let previousTimestamp = Number.NEGATIVE_INFINITY;
+  for (const value of messages) {
+    const message = value as {
+      messageUrl: string;
+      timestamp: string;
+      contextImages: Array<{ imagePath: string }>;
+    };
+    const timestamp = Date.parse(message.timestamp);
+    if (
+      !Number.isFinite(timestamp) ||
+      timestamp <= previousTimestamp ||
+      messageUrls.has(message.messageUrl)
+    ) {
+      return false;
+    }
+    previousTimestamp = timestamp;
+    messageUrls.add(message.messageUrl);
+    for (const image of message.contextImages) {
+      if (imagePaths.has(image.imagePath)) {
+        return false;
+      }
+      imagePaths.add(image.imagePath);
+    }
   }
   return true;
 }
