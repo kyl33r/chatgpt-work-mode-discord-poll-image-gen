@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveDiscordConversationDestination } from "../src/conversation/discord-conversation-destination.js";
+import {
+  ConversationDestinationError,
+  resolveDiscordConversationDestination
+} from "../src/conversation/discord-conversation-destination.js";
 import {
   type ConversationObservationRequest,
   type ConversationObservation,
   type ConversationSource,
   type StableMessageIdentity,
+  ConversationSourceError,
   parseConversation
 } from "../src/conversation/conversation-parser.js";
 
@@ -16,6 +20,204 @@ const destination = resolveDiscordConversationDestination(CHANNEL_URL, [CHANNEL_
 const messageIdentity = (value: string): StableMessageIdentity => value as StableMessageIdentity;
 
 describe("parseConversation", () => {
+  it("rejects boundary observations without contiguous boundary-relative coverage", () => {
+    const request = validParseRequest();
+
+    expectControlledParserError(
+      () => parseConversation({
+        ...request,
+        observation: {
+          ...request.observation,
+          coverage: { kind: "contiguous-visible-segment", segmentStart: messageIdentity("discord-message:private-start") }
+        }
+      } as never),
+      "discord-message:private-start",
+      "ConversationBoundaryError"
+    );
+  });
+
+  it("retains the established visible segment start for a no-boundary snapshot", () => {
+    const segmentStart = messageIdentity("discord-message:segment-start");
+
+    const snapshot = parseConversation({
+      destination,
+      messageLimit: 2,
+      attachmentLimitPerMessage: 2,
+      attachmentLimitTotal: 5,
+      supportedAttachmentMediaTypes: ["image/png"],
+      observation: {
+        destination,
+        coverage: { kind: "contiguous-visible-segment", segmentStart },
+        messages: [
+          message("ordinary-text", "First visible message", "discord-message:segment-start"),
+          message("ordinary-text", "Second visible message", "discord-message:second")
+        ]
+      }
+    });
+
+    expect(snapshot).toMatchObject({
+      destination,
+      segmentStart,
+      complete: true,
+      messages: [{ text: "First visible message" }, { text: "Second visible message" }]
+    });
+  });
+
+  it("rejects a no-boundary segment whose claimed start is not the first visible identity", () => {
+    const privateSegmentStart = "discord-message:private-earlier-start";
+
+    expectControlledParserError(
+      () =>
+        parseConversation({
+          destination,
+          messageLimit: 1,
+          attachmentLimitPerMessage: 2,
+          attachmentLimitTotal: 5,
+          supportedAttachmentMediaTypes: ["image/png"],
+          observation: {
+            destination,
+            coverage: {
+              kind: "contiguous-visible-segment",
+              segmentStart: messageIdentity(privateSegmentStart)
+            },
+            messages: [message("ordinary-text", "Visible text", "discord-message:actual-first")]
+          }
+        }),
+      privateSegmentStart,
+      "ConversationBoundaryError"
+    );
+  });
+
+  it("rejects an observation from a different destination", () => {
+    const request = validParseRequest();
+    const otherDestination = resolveDiscordConversationDestination(
+      "https://discord.com/channels/123456789012345/345678901234567",
+      ["https://discord.com/channels/123456789012345/345678901234567"]
+    );
+
+    expect(() =>
+      parseConversation({
+        ...request,
+        observation: { ...request.observation, destination: otherDestination }
+      })
+    ).toThrow(ConversationDestinationError);
+  });
+
+  it("rejects an observation with a mismatched boundary", () => {
+    const request = validParseRequest();
+
+    expectControlledParserError(
+      () =>
+        parseConversation({
+          ...request,
+          observation: { ...request.observation, boundary: messageIdentity("discord-message:private-mismatch") }
+        }),
+      "discord-message:private-mismatch",
+      "ConversationBoundaryError"
+    );
+  });
+
+  it("rejects duplicate message identities without accepting an ambiguous prefix", () => {
+    const privateIdentity = "discord-message:private-duplicate";
+
+    expectControlledParserError(
+      () =>
+        parseMessages([
+          message("ordinary-text", "First visible message", privateIdentity),
+          message("ordinary-text", "Conflicting visible message", privateIdentity)
+        ]),
+      privateIdentity,
+      "ConversationOrderError"
+    );
+  });
+
+  it("rejects an empty stable message identity as an ordering ambiguity", () => {
+    const request = validParseRequest();
+
+    expectControlledParserError(
+      () =>
+        parseConversation({
+          ...request,
+          observation: {
+            ...request.observation,
+            messages: [message("ordinary-text", "Visible text", "")]
+          }
+        }),
+      "private-empty-identity",
+      "ConversationOrderError"
+    );
+  });
+
+  it("rejects an observation with a missing stable message identity", () => {
+    const request = validParseRequest();
+    const privateText = "private-message-without-identity";
+
+    expectControlledObservationError(
+      () =>
+        parseConversation({
+          ...request,
+          observation: {
+            ...request.observation,
+            messages: [
+              {
+                kind: "ordinary-text",
+                text: privateText,
+                author: { id: "participant", name: "Participant" },
+                timestamp: "2026-08-26T10:00:00.000Z",
+                attachments: []
+              }
+            ]
+          }
+        } as never),
+      privateText
+    );
+  });
+
+  it("rejects a boundary batch that omits contiguous coverage proof", () => {
+    const request = validParseRequest();
+
+    expectControlledParserError(
+      () =>
+        parseConversation({
+          ...request,
+          observation: { ...request.observation, coverage: { privateGap: "virtualized" } }
+        } as never),
+      "virtualized",
+      "ConversationBoundaryError"
+    );
+  });
+
+  it("represents source uncertainty as a controlled source error", async () => {
+    const source: ConversationSource = {
+      async observe() {
+        throw new ConversationSourceError();
+      }
+    };
+
+    await expect(
+      source.observe({ destination, stopAfterQualifyingMessages: 1 })
+    ).rejects.toMatchObject({ name: "ConversationSourceError" });
+  });
+
+  it("validates visible timestamp metadata without reordering provider messages", () => {
+    const privateTimestamp = "private-not-a-visible-timestamp";
+    const request = validParseRequest();
+
+    expectControlledObservationError(
+      () =>
+        parseConversation({
+          ...request,
+          observation: {
+            ...request.observation,
+            messages: [
+              { ...message("ordinary-text", "Visible text", "discord-message:ordinary"), timestamp: privateTimestamp }
+            ]
+          }
+        }),
+      privateTimestamp
+    );
+  });
+
   it("parses a boundary-relative qualifying prefix", async () => {
     const boundary = messageIdentity("discord-message:boundary");
     const source: ConversationSource = {

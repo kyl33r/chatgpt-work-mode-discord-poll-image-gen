@@ -1,4 +1,7 @@
-import type { ConversationDestination } from "./discord-conversation-destination.js";
+import {
+  ConversationDestinationError,
+  type ConversationDestination
+} from "./discord-conversation-destination.js";
 
 declare const stableMessageIdentity: unique symbol;
 declare const opaqueAttachmentSelection: unique symbol;
@@ -34,7 +37,9 @@ export interface ConversationParseRequest {
 export interface ConversationObservationBatch {
   readonly destination: ConversationDestination;
   readonly boundary?: StableMessageIdentity;
-  readonly coverage: { readonly kind: "contiguous-after-boundary" };
+  readonly coverage:
+    | { readonly kind: "contiguous-after-boundary" }
+    | { readonly kind: "contiguous-visible-segment"; readonly segmentStart: StableMessageIdentity };
   readonly messages: readonly ConversationObservation[];
 }
 
@@ -76,6 +81,7 @@ export interface AttachmentSelection {
 export interface ConversationSnapshot {
   readonly destination: ConversationDestination;
   readonly boundary?: StableMessageIdentity;
+  readonly segmentStart?: StableMessageIdentity;
   readonly complete: boolean;
   readonly messages: readonly QualifyingConversationMessage[];
   readonly selectedAttachments: readonly AttachmentSelection[];
@@ -92,6 +98,20 @@ export class ConversationOrderError extends Error {
   public constructor() {
     super("Conversation order is invalid.");
     this.name = "ConversationOrderError";
+  }
+}
+
+export class ConversationBoundaryError extends Error {
+  public constructor() {
+    super("Conversation boundary coverage is invalid.");
+    this.name = "ConversationBoundaryError";
+  }
+}
+
+export class ConversationSourceError extends Error {
+  public constructor() {
+    super("Conversation source is uncertain.");
+    this.name = "ConversationSourceError";
   }
 }
 
@@ -141,6 +161,9 @@ export function parseConversation(request: ConversationParseRequest): Conversati
   return {
     destination: request.destination,
     ...(request.boundary === undefined ? {} : { boundary: request.boundary }),
+    ...(request.observation.coverage.kind === "contiguous-visible-segment"
+      ? { segmentStart: request.observation.coverage.segmentStart }
+      : {}),
     complete: messages.length === request.messageLimit,
     messages,
     selectedAttachments
@@ -155,6 +178,16 @@ function isQualifying(observation: ConversationObservation): observation is Conv
 
 function validateRequest(request: unknown): asserts request is ConversationParseRequest {
   if (
+    isRecord(request) &&
+    isRecord(request.observation) &&
+    typeof request.observation.destination === "string" &&
+    Array.isArray(request.observation.messages) &&
+    !isCoverage(request.observation.coverage)
+  ) {
+    throw new ConversationBoundaryError();
+  }
+
+  if (
     !isRecord(request) ||
     typeof request.destination !== "string" ||
     (request.boundary !== undefined && typeof request.boundary !== "string") ||
@@ -167,7 +200,30 @@ function validateRequest(request: unknown): asserts request is ConversationParse
     throw new ConversationObservationError();
   }
 
+  if (
+    (request.boundary !== undefined && request.observation.coverage.kind !== "contiguous-after-boundary") ||
+    (request.boundary === undefined && request.observation.coverage.kind !== "contiguous-visible-segment")
+  ) {
+    throw new ConversationBoundaryError();
+  }
+
+  if (request.destination !== request.observation.destination) {
+    throw new ConversationDestinationError();
+  }
+
+  if (request.boundary !== request.observation.boundary) {
+    throw new ConversationBoundaryError();
+  }
+
+  if (
+    request.observation.coverage.kind === "contiguous-visible-segment" &&
+    request.observation.messages[0]?.identity !== request.observation.coverage.segmentStart
+  ) {
+    throw new ConversationBoundaryError();
+  }
+
   validateAttachmentIndexes(request.observation.messages);
+  validateMessageIdentities(request.observation.messages);
 }
 
 function isPositiveInteger(value: unknown): value is number {
@@ -191,10 +247,22 @@ function isConversationObservationBatch(value: unknown): value is ConversationOb
     isRecord(value) &&
     typeof value.destination === "string" &&
     (value.boundary === undefined || typeof value.boundary === "string") &&
-    isRecord(value.coverage) &&
-    value.coverage.kind === "contiguous-after-boundary" &&
+    isCoverage(value.coverage) &&
     Array.isArray(value.messages) &&
     value.messages.every(isConversationObservation)
+  );
+}
+
+function isCoverage(
+  value: unknown
+): value is ConversationObservationBatch["coverage"] {
+  return (
+    isRecord(value) &&
+    ((value.kind === "contiguous-after-boundary" && hasOnlyKeys(value, ["kind"])) ||
+      (value.kind === "contiguous-visible-segment" &&
+        typeof value.segmentStart === "string" &&
+        value.segmentStart.length > 0 &&
+        hasOnlyKeys(value, ["kind", "segmentStart"])))
   );
 }
 
@@ -205,11 +273,25 @@ function isConversationObservation(value: unknown): value is ConversationObserva
     (value.kind === "ordinary-text" || value.kind === "system" || value.kind === "attachment-only") &&
     typeof value.text === "string" &&
     isConversationAuthor(value.author) &&
-    typeof value.timestamp === "string" &&
+    isVisibleTimestamp(value.timestamp) &&
     Array.isArray(value.attachments) &&
     isDenseArray(value.attachments) &&
     value.attachments.every(isConversationAttachmentObservation)
   );
+}
+
+function isVisibleTimestamp(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) {
+    return false;
+  }
+
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.valueOf())) {
+    return false;
+  }
+
+  const canonicalTimestamp = value.includes(".") ? value : value.replace("Z", ".000Z");
+  return timestamp.toISOString() === canonicalTimestamp;
 }
 
 function isConversationAttachmentObservation(value: unknown): value is ConversationAttachmentObservation {
@@ -236,6 +318,16 @@ function validateAttachmentIndexes(messages: readonly ConversationObservation[])
       }
       previousIndex = attachment.index;
     }
+  }
+}
+
+function validateMessageIdentities(messages: readonly ConversationObservation[]): void {
+  const identities = new Set<string>();
+  for (const message of messages) {
+    if (message.identity.length === 0 || identities.has(message.identity)) {
+      throw new ConversationOrderError();
+    }
+    identities.add(message.identity);
   }
 }
 
