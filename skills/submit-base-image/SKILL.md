@@ -28,10 +28,11 @@ Start exactly one round without accessing Discord credentials or APIs.
 6. Verify the returned channel equals the local allowlist. The command has already persisted `submitting-base` only in this round's `round.json`; do not run it again if posting becomes uncertain.
 7. Use the signed-in Discord web UI to open the exact channel.
 8. Obtain action-time confirmation before posting unless the owner explicitly requested this exact live post in the current turn.
-9. Post the returned caption and returned Base Image together as one Discord message. Do not add a second instruction message after the boundary.
-10. Confirm that exact post is visibly present, capture its stable message URL, and read its visible timestamp as `collectionStartedAt`.
-11. Put `{ "roundId", "baseMessageUrl", "collectionStartedAt" }` in `.runtime/confirm-base.json` and run `npm run round -- confirm-base-submission < .runtime/confirm-base.json`.
-12. Report only the round ID and that collection started; do not expose private channel identifiers.
+9. Read `skills/discord-image-paste/SKILL.md` completely and follow it to paste the returned Base Image, fill the returned caption, and send exactly once.
+10. Post the returned caption and returned Base Image together as one Discord message. Do not add a second instruction message after the boundary.
+11. Confirm that exact post is visibly present, capture its stable message URL, and read its visible timestamp as `collectionStartedAt`.
+12. Put `{ "roundId", "baseMessageUrl", "collectionStartedAt" }` in `.runtime/confirm-base.json` and run `npm run round -- confirm-base-submission < .runtime/confirm-base.json`.
+13. Report only the round ID and that collection started; do not expose private channel identifiers.
 
 If login, verification, upload, destination, or visible confirmation is uncertain, run `npm run round -- mark-attention` with JSON `{ "roundId", "reason" }` on stdin and stop. Never retry an uncertain post.
 

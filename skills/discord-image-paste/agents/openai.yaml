@@ -1,0 +1,4 @@
+interface:
+  display_name: "Discord Image Paste"
+  short_description: "Paste verified images into Discord safely"
+  default_prompt: "Use $discord-image-paste to paste and verify one image in Discord."

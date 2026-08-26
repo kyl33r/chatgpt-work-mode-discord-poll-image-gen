@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const EXPECTED_SKILLS = [
   "configure-discord-channel",
+  "discord-image-paste",
   "get-discord-polls",
   "image-gen",
   "round-start",
@@ -12,6 +13,7 @@ const EXPECTED_SKILLS = [
 
 const DISCOVERY_CUES: Record<(typeof EXPECTED_SKILLS)[number], readonly string[]> = {
   "configure-discord-channel": ["configure", "discord", "channel", "allowlist"],
+  "discord-image-paste": ["paste", "discord", "image", "clipboard"],
   "get-discord-polls": ["messages", "poll", "boundary"],
   "image-gen": ["edit", "base image", "feedback"],
   "round-start": ["start", "resume", "discord"],
@@ -27,6 +29,7 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
     ["discord"],
     ["channel", "allowlist"]
   ],
+  "discord-image-paste": [["paste", "attach", "upload"], ["discord"], ["image", "clipboard"]],
   "get-discord-polls": [["collect", "scan", "close"], ["message", "poll", "feedback"]],
   "image-gen": [["edit", "generate", "publish"], ["image"], ["feedback", "poll"]],
   "round-start": [["start", "resume", "run"], ["round", "workflow"], ["discord"]],
@@ -35,6 +38,7 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
 
 const REQUIRED_COMMANDS: Record<(typeof EXPECTED_SKILLS)[number], readonly string[]> = {
   "configure-discord-channel": ["configure:channel"],
+  "discord-image-paste": [],
   "get-discord-polls": [
     "plan-next",
     "get-round",
@@ -137,6 +141,7 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     }
     if (
       skillName !== "configure-discord-channel" &&
+      skillName !== "discord-image-paste" &&
       !skillMarkdown.includes("npm run round")
     ) {
       issues.push(`${skillName}: deterministic CLI boundary is missing.`);
@@ -168,6 +173,7 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     if (skillName === "round-start") {
       for (const childSkill of [
         "configure-discord-channel",
+        "discord-image-paste",
         "submit-base-image",
         "get-discord-polls",
         "image-gen"
@@ -179,6 +185,37 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
       if (!skillMarkdown.includes("$imagegen")) {
         issues.push("round-start: Work-mode imagegen invocation is missing.");
       }
+    }
+    if (skillName === "discord-image-paste") {
+      for (const clipboardContract of [
+        'presentationStyle: "attachment"',
+        'mimeType: "image/png"',
+        "Meta+V",
+        "After `Enter`, never",
+        "reset the override"
+      ]) {
+        if (!skillMarkdown.includes(clipboardContract)) {
+          issues.push(`discord-image-paste: clipboard contract ${clipboardContract} is missing.`);
+        }
+      }
+    }
+    if (
+      (skillName === "submit-base-image" || skillName === "image-gen") &&
+      !skillMarkdown.includes("skills/discord-image-paste/SKILL.md")
+    ) {
+      issues.push(`${skillName}: shared Discord clipboard-paste skill is not referenced.`);
+    }
+    if (
+      skillName === "get-discord-polls" &&
+      (!skillMarkdown.includes("`authorId`") || !skillMarkdown.includes("`authorName`"))
+    ) {
+      issues.push("get-discord-polls: exact message author fields are missing.");
+    }
+    if (
+      skillName === "round-start" &&
+      !skillMarkdown.includes("Keep the ChatGPT task active")
+    ) {
+      issues.push("round-start: active-task polling lifecycle is missing.");
     }
     if (
       (skillName === "round-start" || skillName === "get-discord-polls") &&

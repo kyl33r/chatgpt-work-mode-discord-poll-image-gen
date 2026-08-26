@@ -13,6 +13,7 @@ Canonical skill source lives under:
 ```text
 skills/
 ├── configure-discord-channel/
+├── discord-image-paste/
 ├── round-start/
 ├── submit-base-image/
 ├── get-discord-polls/
@@ -20,6 +21,8 @@ skills/
 ```
 
 Repo-discovery symlinks under `.agents/skills/` point to those folders. Shared TypeScript code owns state transitions, feedback normalization, poll mapping, JSON persistence, and duplicate prevention.
+
+Skills are supervised workflows, not background listeners. `$round-start` keeps its ChatGPT task active and scans at the configured interval until collection freezes or the round stops; ending that task pauses polling until the owner resumes it. A separately approved background service is required for unattended collection.
 
 ## First POC
 

@@ -29,10 +29,11 @@ Never include a raw error, refusal explanation, provider response, local diagnos
 3. The CLI reads `.state/discord-channel-allowlist.json` and has already rejected a differing stored channel. Treat URLs in local command output as sensitive and do not repeat them in chat, durable logs, generated documents, or commits.
 4. Open only that channel in the signed-in Discord browser.
 5. Obtain action-time confirmation before posting unless this exact live outcome post was explicitly requested in the current turn.
-6. Perform exactly the returned action. Never add raw diagnostics to its caption.
-7. Confirm the visible outcome post and capture its stable message URL.
-8. Run `confirm-publication` with `{ "roundId", "outcomeMessageUrl" }`.
-9. Run `plan-next` with `{ "roundId" }`; require `Round is already completed.` before reporting success.
+6. For `post-result-image`, read `skills/discord-image-paste/SKILL.md` completely and follow it with the returned Result Image and caption. For `post-status-message`, post only the returned controlled text.
+7. Perform exactly the returned action. Never add raw diagnostics to its caption.
+8. Confirm the visible outcome post and capture its stable message URL.
+9. Run `confirm-publication` with `{ "roundId", "outcomeMessageUrl" }`.
+10. Run `plan-next` with `{ "roundId" }`; require `Round is already completed.` before reporting success.
 
 If the upload or confirmation is uncertain, run `mark-attention` and stop. Never upload another copy automatically. Do not open unrelated channels, DMs, or links.
 Never access Discord credentials or internal APIs.

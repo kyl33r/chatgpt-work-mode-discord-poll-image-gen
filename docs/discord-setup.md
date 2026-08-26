@@ -32,7 +32,7 @@ The skill stages the selected image inside its gitignored `.state/rounds/<round-
 
 1. Invoke `$round-start` with the ChatGPT attachment or exact Discord message link.
 2. Let any participants post ordinary non-empty text after the Base Image boundary. No prefix is required and repeated authors count.
-3. Keep the supervised task active for bounded scans until the configured five-message limit is reached.
+3. Keep the supervised task active for bounded scans until the configured five-message limit is reached. Skills are not background listeners; ending the task pauses collection until the owner resumes it or separately approves a background service.
 4. Confirm the returned closed-marker post containing the sanitized final prompt; later messages no longer count.
 5. Let `$round-start` invoke `$imagegen` here exactly once using that persisted prompt.
 6. Publish exactly one controlled outcome: the Result Image, sanitized refusal, or sanitized failure status.
