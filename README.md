@@ -6,6 +6,22 @@ The owner starts a round from ChatGPT with a Base Image attached here or linked 
 
 The POC deliberately uses no Discord bot, Discord token, incoming webhook, OpenAI API key, or second Playwright-controlled ChatGPT browser.
 
+## Prerequisites
+
+The validated reference environment is ChatGPT Work running in the ChatGPT desktop app. The local desktop host is required for this implementation because the agent must control an authenticated browser session while reading this repository, its project skills, and its private worktree-local state.
+
+Another agent host—such as Claude Cowork, a Gemini environment, or a future equivalent—can support the same workflow only if it provides all of these capabilities:
+
+- a browser integration directly controlled by the agent;
+- a persistent browser profile in which the owner can manually sign into Discord;
+- visible-page navigation, reading, posting, file download, clipboard paste, and attachment upload;
+- local filesystem access to this repository, `skills/`, and gitignored `.state/` data;
+- image-generation or image-editing capability that accepts the Base Image and ordered Participant Reference Images;
+- a task that can remain active for supervised polling or can be explicitly resumed from durable state; and
+- confirmation boundaries and fail-closed handling for uncertain posts, uploads, downloads, or generation attempts.
+
+Provider equivalence is capability-based, not a declaration that every Claude, Gemini, or other product currently implements these interfaces. A new host requires an adapter and a supervised compatibility test before it is treated as supported. A normal browser that the agent cannot inspect and operate is insufficient.
+
 ## Skills
 
 Canonical skill source lives under:

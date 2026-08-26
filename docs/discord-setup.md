@@ -2,6 +2,27 @@
 
 This POC uses the signed-in Discord web UI. It does not need a bot, webhook, Discord token, or Discord developer application.
 
+## Agent-host prerequisites
+
+ChatGPT Work in the ChatGPT desktop app is the validated reference host for this POC. The host must give the agent direct control of an authenticated browser and local access to this repository. Opening Discord in an ordinary browser tab is not sufficient if the agent cannot inspect the visible page, navigate to the allowlisted channel, paste or upload images, read bounded messages and attachments, and verify the resulting posts.
+
+An equivalent environment from another model or provider—including a Claude Cowork or Gemini-based environment—may be adapted when it supplies the same browser-control, local-filesystem, durable-state, image-editing, and confirmation capabilities. These names are examples of possible host categories, not a guarantee of current compatibility.
+
+Before using another host, verify that it can:
+
+1. use a persistent browser profile and let the owner sign into Discord manually without exposing credentials;
+2. open the privately stored allowlisted channel from a fresh browser state;
+3. inspect visible Discord messages and attachments without Discord tokens or internal APIs;
+4. paste or upload the Base Image and Result Image and confirm the stable posted message;
+5. download selected visible attachments into the owning Round State Capsule;
+6. read and execute the canonical project skills under `skills/`;
+7. read and update the worktree-local, gitignored `.state/` records;
+8. edit images using the Base Image first and Participant Reference Images as ordered supporting context;
+9. remain active during supervised polling or resume deterministically from durable state; and
+10. stop for confirmation or enter `needs-attention` whenever an external action is ambiguous.
+
+Until that compatibility test passes, treat the alternate host as unsupported and do not perform live Discord side effects with it.
+
 ## Prepare Discord
 
 1. Choose one private test channel, group DM, or DM.
