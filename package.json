@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc --noEmit",
     "round": "tsx --env-file=.env src/cli.ts",
+    "migrate:state": "tsx src/migrate-state.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "validate:skills": "tsx scripts/validate-skills.ts",

@@ -12,9 +12,9 @@ Attempt one image edit and publish exactly one controlled Discord outcome.
 All commands use `npm run round -- <command> < .runtime/<command>.json` with the documented JSON object on stdin.
 
 1. Run `plan-next` with `{ "roundId" }`. Continue only on `begin-generation`; stop on `needs-attention`, `none`, or an unexpected action.
-2. Run `prepare-generation` with `{ "roundId" }`. This persists `generating` before image generation and returns the recorded base-image path plus a deterministic instruction.
-3. Invoke `$imagegen` exactly once as an edit, using the returned base image as the reference and the returned instruction unchanged.
-4. Do not add, summarize, reinterpret, or prioritize the captured messages yourself.
+2. Run `prepare-generation` with `{ "roundId" }`. This persists `generating` before image generation and returns the recorded Base Image plus the exact persisted Synthesized Prompt.
+3. Invoke `$imagegen` exactly once as an edit, using the returned Base Image as the reference and the returned prompt unchanged. Render the Result Image in the current ChatGPT task.
+4. Do not add, summarize, regenerate, reinterpret, or prioritize the prompt. Copy the one confirmed Result Image beneath `.state/results/` before recording success.
 5. Classify the confirmed outcome without retaining raw provider output:
    - If exactly one local Result Image exists, run `confirm-generation` with `{ "roundId", "outcome": "succeeded", "resultImagePath" }`.
    - If image generation explicitly refuses the edit, run it with `{ "roundId", "outcome": "refused" }`.

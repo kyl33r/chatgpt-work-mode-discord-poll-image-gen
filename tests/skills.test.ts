@@ -15,9 +15,11 @@ describe("project skills", () => {
     ["submit-base-image", "$submit-base-image"],
     ["get-discord-polls", "$get-discord-polls"],
     ["image-gen", "$image-gen"],
+    ["round-start", "$round-start"],
     ["submit-base-image", "Post this base image to Discord for participant feedback."],
     ["get-discord-polls", "Scan the Discord text poll for its first five messages."],
-    ["image-gen", "Generate an image edit from the winning poll feedback."]
+    ["image-gen", "Generate an image edit from the winning poll feedback."],
+    ["round-start", "Start the Discord image feedback round workflow."]
   ])("matches the %s skill for explicit and implicit prompt %s", (skillName, prompt) => {
     expect(matchesSkillPrompt(skillName, prompt)).toBe(true);
   });

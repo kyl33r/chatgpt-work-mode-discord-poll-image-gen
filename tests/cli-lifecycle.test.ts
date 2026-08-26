@@ -68,8 +68,40 @@ describe("round CLI lifecycle", () => {
         store
       )
     ).toMatchObject({
+      action: "synthesize-feedback",
+      roundId: "R100"
+    });
+
+    expect(await executeCommand("plan-next", { roundId: "R100" }, store)).toEqual({
+      type: "synthesize-feedback"
+    });
+    expect(
+      await executeCommand("prepare-prompt-synthesis", { roundId: "R100" }, store)
+    ).toMatchObject({
+      action: "synthesize-prompt",
+      roundId: "R100",
+      capturedMessages: Array.from({ length: 5 }, (_, index) => ({
+        text: `change ${index + 1}`
+      }))
+    });
+
+    const synthesizedPrompt =
+      "Edit the supplied base image using this synthesized participant feedback:\n" +
+      "Apply all five requested visual changes as one coherent edit.\n" +
+      "Preserve unrelated content. Produce exactly one edited image.";
+    expect(
+      await executeCommand(
+        "confirm-synthesized-prompt",
+        { roundId: "R100", synthesizedPrompt },
+        store
+      )
+    ).toEqual({
       action: "post-collection-closed",
-      operationId: "R100:closing-collection:1:469d047ee160"
+      operationId: "R100:closing-collection:1:469d047ee160",
+      roundId: "R100",
+      channelUrl: "https://discord.test/channels/allowlisted",
+      caption:
+        "===== POLL CLOSED: R100 =====\nFinal image prompt:\n" + synthesizedPrompt
     });
 
     await executeCommand(
@@ -77,24 +109,29 @@ describe("round CLI lifecycle", () => {
       { roundId: "R100", closedMessageUrl: "https://discord.test/messages/closed" },
       store
     );
-    expect(await executeCommand("prepare-generation", { roundId: "R100" }, store)).toMatchObject({
+    expect(await executeCommand("prepare-generation", { roundId: "R100" }, store)).toEqual({
       action: "generate-image",
-      operationId: "R100:generating:1:16e1daee7f6b"
+      operationId: "R100:generating:1:16e1daee7f6b",
+      roundId: "R100",
+      baseImagePath,
+      instruction: synthesizedPrompt
     });
 
     const resultImagePath = join(directory, "result.png");
     await writeFile(resultImagePath, "test result fixture", "utf8");
+    const stagedResultImagePath = await realpath(resultImagePath);
     await executeCommand(
       "confirm-generation",
       { roundId: "R100", outcome: "succeeded", resultImagePath },
-      store
+      store,
+      { resultImageStagingRoot: directory }
     );
     expect(
       await executeCommand("prepare-publication", { roundId: "R100" }, store)
     ).toMatchObject({
       action: "post-result-image",
       operationId: "R100:publishing-outcome:1:469d047ee160",
-      resultImagePath,
+      resultImagePath: stagedResultImagePath,
       caption: "===== RESULT: R100 ====="
     });
     await executeCommand(
@@ -109,7 +146,7 @@ describe("round CLI lifecycle", () => {
     });
     expect(await store.get("R100")).toMatchObject({
       phase: "completed",
-      generationOutcome: { kind: "succeeded", resultImagePath },
+      generationOutcome: { kind: "succeeded", resultImagePath: stagedResultImagePath },
       outcomeMessageUrl: "https://discord.test/messages/result"
     });
   });

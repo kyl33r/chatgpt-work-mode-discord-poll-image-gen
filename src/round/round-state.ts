@@ -5,6 +5,7 @@ export type RoundPhase =
   | "draft"
   | "submitting-base"
   | "collecting-messages"
+  | "synthesizing-feedback"
   | "closing-collection"
   | "ready-to-generate"
   | "generating"
@@ -29,6 +30,7 @@ export interface RoundState {
   baseMessageUrl?: string;
   collectionStartedAt?: string;
   capturedMessages: CapturedMessage[];
+  synthesizedPrompt?: string;
   closedMessageUrl?: string;
   generationOutcome?: GenerationOutcome;
   outcomeMessageUrl?: string;
@@ -44,6 +46,7 @@ export type RoundEvent =
     }
   | { type: "message-collection-progressed"; capturedMessages: CapturedMessage[] }
   | { type: "message-collection-filled"; capturedMessages: CapturedMessage[] }
+  | { type: "synthesized-prompt-confirmed"; synthesizedPrompt: string }
   | { type: "collection-closed"; closedMessageUrl: string }
   | { type: "generation-started" }
   | { type: "generation-succeeded"; resultImagePath: string }
@@ -116,11 +119,27 @@ export function applyRoundEvent(round: RoundState, event: RoundEvent): RoundStat
     }
     return {
       ...round,
-      phase: "closing-collection",
+      phase: "synthesizing-feedback",
       capturedMessages: event.capturedMessages
     };
   }
+  if (
+    round.phase === "synthesizing-feedback" &&
+    event.type === "synthesized-prompt-confirmed"
+  ) {
+    if (event.synthesizedPrompt.length === 0) {
+      throw new Error("Synthesized Prompt must not be empty.");
+    }
+    return {
+      ...round,
+      phase: "closing-collection",
+      synthesizedPrompt: event.synthesizedPrompt
+    };
+  }
   if (round.phase === "closing-collection" && event.type === "collection-closed") {
+    if (!round.synthesizedPrompt) {
+      throw new Error("Collection cannot close without a Synthesized Prompt.");
+    }
     return { ...round, phase: "ready-to-generate", closedMessageUrl: event.closedMessageUrl };
   }
   if (round.phase === "ready-to-generate" && event.type === "generation-started") {

@@ -9,6 +9,10 @@ import { applyRoundEvent, createRound } from "../src/round/round-state.js";
 import { JsonRoundStateStore } from "../src/round/round-state-store.js";
 
 const temporaryDirectories: string[] = [];
+const SYNTHESIZED_PROMPT =
+  "Edit the supplied base image using this synthesized participant feedback:\n" +
+  "Apply all five requested visual changes as one coherent edit.\n" +
+  "Preserve unrelated content. Produce exactly one edited image.";
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })));
@@ -94,17 +98,39 @@ describe("executeCommand", () => {
         store
       )
     ).toEqual({
+      action: "synthesize-feedback",
+      roundId: "R001"
+    });
+
+    expect(await store.get("R001")).toMatchObject({
+      phase: "synthesizing-feedback",
+      capturedMessages: [1, 2, 3, 4, 5].map(captured)
+    });
+
+    expect(await executeCommand("prepare-prompt-synthesis", { roundId: "R001" }, store)).toEqual({
+      action: "synthesize-prompt",
+      roundId: "R001",
+      capturedMessages: [1, 2, 3, 4, 5].map(captured)
+    });
+
+    expect(
+      await executeCommand(
+        "confirm-synthesized-prompt",
+        { roundId: "R001", synthesizedPrompt: SYNTHESIZED_PROMPT },
+        store
+      )
+    ).toEqual({
       action: "post-collection-closed",
       operationId: "R001:closing-collection:1:469d047ee160",
       roundId: "R001",
       channelUrl: "https://discord.test/channels/allowlisted",
-      caption: "===== POLL CLOSED: R001 =====",
-      capturedMessages: [1, 2, 3, 4, 5].map(captured)
+      caption: `===== POLL CLOSED: R001 =====\nFinal image prompt:\n${SYNTHESIZED_PROMPT}`
     });
 
     expect(await store.get("R001")).toMatchObject({
       phase: "closing-collection",
-      capturedMessages: [1, 2, 3, 4, 5].map(captured)
+      capturedMessages: [1, 2, 3, 4, 5].map(captured),
+      synthesizedPrompt: SYNTHESIZED_PROMPT
     });
 
     expect(
@@ -153,6 +179,10 @@ describe("executeCommand", () => {
       capturedMessages: messages
     });
     round = applyRoundEvent(round, {
+      type: "synthesized-prompt-confirmed",
+      synthesizedPrompt: SYNTHESIZED_PROMPT
+    });
+    round = applyRoundEvent(round, {
       type: "collection-closed",
       closedMessageUrl: "closed-message"
     });
@@ -163,8 +193,7 @@ describe("executeCommand", () => {
       operationId: "RGEN:generating:1:1822396ccc5e",
       roundId: "RGEN",
       baseImagePath: "/tmp/base.png",
-      instruction:
-        "Edit the supplied base image using all of these Discord messages as requested changes:\n1. requested change 1\n2. requested change 2\n3. requested change 3\n4. requested change 4\n5. requested change 5\nPreserve unrelated content. Produce exactly one edited image."
+      instruction: SYNTHESIZED_PROMPT
     });
     expect((await store.get("RGEN"))?.phase).toBe("generating");
   });
@@ -279,7 +308,7 @@ describe("executeCommand", () => {
         store,
         { baseImageStagingRoot: stagingRoot }
       )
-    ).rejects.toThrow("Base image must be staged under the configured runtime directory.");
+    ).rejects.toThrow("Base image must be staged under the durable state directory.");
 
     const linkedImagePath = join(stagingRoot, "linked.png");
     await symlink(outsideImagePath, linkedImagePath);
@@ -294,7 +323,28 @@ describe("executeCommand", () => {
         store,
         { baseImageStagingRoot: stagingRoot }
       )
-    ).rejects.toThrow("Base image must be staged under the configured runtime directory.");
+    ).rejects.toThrow("Base image must be staged under the durable state directory.");
+  });
+
+  it("rejects a Result Image outside the durable staging root", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "feedback-round-cli-"));
+    temporaryDirectories.push(directory);
+    const resultRoot = join(directory, ".state", "results");
+    await mkdir(resultRoot, { recursive: true });
+    const outsideImagePath = join(directory, "outside.png");
+    await writeFile(outsideImagePath, "image", "utf8");
+    const store = new JsonRoundStateStore(join(directory, "rounds.json"));
+    await store.save(readyRound("RRESULT"));
+    await executeCommand("prepare-generation", { roundId: "RRESULT" }, store);
+
+    await expect(
+      executeCommand(
+        "confirm-generation",
+        { roundId: "RRESULT", outcome: "succeeded", resultImagePath: outsideImagePath },
+        store,
+        { resultImageStagingRoot: resultRoot }
+      )
+    ).rejects.toThrow("Result image must be staged under the durable state directory.");
   });
 
   it("rejects a persisted round outside the configured channel allowlist", async () => {
@@ -336,6 +386,10 @@ function readyRound(roundId: string) {
   round = applyRoundEvent(round, {
     type: "message-collection-filled",
     capturedMessages: [1, 2, 3, 4, 5].map(captured)
+  });
+  round = applyRoundEvent(round, {
+    type: "synthesized-prompt-confirmed",
+    synthesizedPrompt: SYNTHESIZED_PROMPT
   });
   return applyRoundEvent(round, {
     type: "collection-closed",

@@ -20,6 +20,14 @@ describe("round state", () => {
       type: "message-collection-filled",
       capturedMessages: fiveMessages()
     });
+    expect(round.phase).toBe("synthesizing-feedback");
+    round = applyRoundEvent(round, {
+      type: "synthesized-prompt-confirmed",
+      synthesizedPrompt:
+        "Edit the supplied base image using this synthesized participant feedback:\n" +
+        "Use all five requested visual changes.\n" +
+        "Preserve unrelated content. Produce exactly one edited image."
+    });
     round = applyRoundEvent(round, {
       type: "collection-closed",
       closedMessageUrl: "closed-message"
@@ -39,6 +47,10 @@ describe("round state", () => {
       phase: "completed",
       messageLimit: 5,
       closedMessageUrl: "closed-message",
+      synthesizedPrompt:
+        "Edit the supplied base image using this synthesized participant feedback:\n" +
+        "Use all five requested visual changes.\n" +
+        "Preserve unrelated content. Produce exactly one edited image.",
       generationOutcome: { kind: "succeeded", resultImagePath: "/tmp/result.png" },
       outcomeMessageUrl: "result-message"
     });

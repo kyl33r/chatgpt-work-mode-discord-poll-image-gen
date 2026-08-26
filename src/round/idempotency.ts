@@ -6,6 +6,7 @@ import type { RoundPhase, RoundState } from "./round-state.js";
 export type PlannedAction =
   | { type: "begin-base-submission"; operationId: string }
   | { type: "scan-messages"; scanIntervalMs: number }
+  | { type: "synthesize-feedback" }
   | { type: "begin-generation"; operationId: string }
   | { type: "begin-outcome-publication"; operationId: string }
   | { type: "needs-attention"; reason: string }
@@ -35,6 +36,9 @@ export function planNextAction(round: RoundState): PlannedAction {
   }
   if (round.phase === "collecting-messages") {
     return { type: "scan-messages", scanIntervalMs: DISCORD_SCAN_INTERVAL_MS };
+  }
+  if (round.phase === "synthesizing-feedback") {
+    return { type: "synthesize-feedback" };
   }
   if (round.phase === "ready-to-generate") {
     return {

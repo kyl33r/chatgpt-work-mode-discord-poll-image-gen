@@ -1,0 +1,4 @@
+interface:
+  display_name: "Round Start"
+  short_description: "Run and resume one Discord image round"
+  default_prompt: "Use $round-start to start or resume the configured Discord image-feedback round."

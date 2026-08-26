@@ -31,7 +31,7 @@ describe("JsonRoundStateStore", () => {
 
     expect(await store.get("R001")).toEqual(round);
     expect(JSON.parse(await readFile(statePath, "utf8"))).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       rounds: [round]
     });
   });

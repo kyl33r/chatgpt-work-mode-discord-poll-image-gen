@@ -2,11 +2,17 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const EXPECTED_SKILLS = ["get-discord-polls", "image-gen", "submit-base-image"] as const;
+const EXPECTED_SKILLS = [
+  "get-discord-polls",
+  "image-gen",
+  "round-start",
+  "submit-base-image"
+] as const;
 
 const DISCOVERY_CUES: Record<(typeof EXPECTED_SKILLS)[number], readonly string[]> = {
   "get-discord-polls": ["messages", "poll", "boundary"],
   "image-gen": ["edit", "base image", "feedback"],
+  "round-start": ["start", "resume", "discord"],
   "submit-base-image": ["submit", "base image", "feedback"]
 };
 
@@ -16,6 +22,7 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
 > = {
   "get-discord-polls": [["collect", "scan", "close"], ["message", "poll", "feedback"]],
   "image-gen": [["edit", "generate", "publish"], ["image"], ["feedback", "poll"]],
+  "round-start": [["start", "resume", "run"], ["round", "workflow"], ["discord"]],
   "submit-base-image": [["submit", "post", "start"], ["image"], ["feedback", "discord"]]
 };
 
@@ -24,7 +31,19 @@ const REQUIRED_COMMANDS: Record<(typeof EXPECTED_SKILLS)[number], readonly strin
     "plan-next",
     "get-round",
     "collect-messages",
+    "prepare-prompt-synthesis",
+    "confirm-synthesized-prompt",
     "confirm-collection-closed",
+    "mark-attention"
+  ],
+  "round-start": [
+    "plan-next",
+    "prepare-prompt-synthesis",
+    "confirm-synthesized-prompt",
+    "prepare-generation",
+    "confirm-generation",
+    "prepare-publication",
+    "confirm-publication",
     "mark-attention"
   ],
   "image-gen": [
@@ -122,6 +141,16 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     }
     if (!skillMarkdown.includes("Never access Discord credentials or internal APIs.")) {
       issues.push(`${skillName}: Discord credential and internal-API prohibition is missing.`);
+    }
+    if (skillName === "round-start") {
+      for (const childSkill of ["submit-base-image", "get-discord-polls", "image-gen"]) {
+        if (!skillMarkdown.includes(`skills/${childSkill}/SKILL.md`)) {
+          issues.push(`round-start: child skill ${childSkill} is not referenced.`);
+        }
+      }
+      if (!skillMarkdown.includes("$imagegen")) {
+        issues.push("round-start: Work-mode imagegen invocation is missing.");
+      }
     }
 
     const agentYaml = await readFile(resolve(skillRoot, "agents/openai.yaml"), "utf8");

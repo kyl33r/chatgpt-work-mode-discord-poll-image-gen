@@ -6,14 +6,14 @@ import {
   BASE_IMAGE_STAGING_ROOT,
   DISCORD_SCAN_INTERVAL_MS,
   FEEDBACK_MESSAGE_LIMIT,
+  FINAL_IMAGE_PROMPT_LABEL,
   GENERATION_FAILED_TEMPLATE,
   GENERATION_REFUSED_TEMPLATE,
-  IMAGE_EDIT_PREAMBLE,
-  IMAGE_EDIT_SUFFIX,
   MESSAGE_COLLECTION_INSTRUCTIONS_TEMPLATE,
   OPERATION_TURN_NUMBER,
   POLL_CLOSED_MARKER_TEMPLATE,
   POLL_START_MARKER_TEMPLATE,
+  RESULT_IMAGE_STAGING_ROOT,
   RESULT_MARKER_TEMPLATE,
   ROUND_STATE_PATH,
   SUPPORTED_IMAGE_EXTENSIONS
@@ -30,6 +30,7 @@ import {
   type RoundEvent,
   type RoundPhase
 } from "./round/round-state.js";
+import { validateSynthesizedPrompt } from "./round/synthesized-prompt.js";
 import {
   JsonRoundStateStore,
   type RoundStateStore
@@ -38,6 +39,7 @@ import {
 interface CommandOptions {
   allowedChannelUrl?: string;
   baseImageStagingRoot?: string;
+  resultImageStagingRoot?: string;
 }
 
 export async function executeCommand(
@@ -67,6 +69,12 @@ export async function executeCommand(
   if (command === "collect-messages") {
     return collectRoundMessages(payload, store);
   }
+  if (command === "prepare-prompt-synthesis") {
+    return preparePromptSynthesis(payload, store);
+  }
+  if (command === "confirm-synthesized-prompt") {
+    return confirmSynthesizedPrompt(payload, store);
+  }
   if (command === "confirm-collection-closed") {
     return applyNamedEvent(payload, store, (record) => ({
       type: "collection-closed",
@@ -77,7 +85,11 @@ export async function executeCommand(
     return prepareGeneration(payload, store);
   }
   if (command === "confirm-generation") {
-    return confirmGeneration(payload, store);
+    return confirmGeneration(
+      payload,
+      store,
+      options.resultImageStagingRoot ?? RESULT_IMAGE_STAGING_ROOT
+    );
   }
   if (command === "prepare-publication") {
     return preparePublication(payload, store);
@@ -152,7 +164,8 @@ async function prepareBaseSubmission(
   );
   const baseImagePath = await requireStagedImagePath(
     requestedBaseImagePath,
-    baseImageStagingRoot
+    baseImageStagingRoot,
+    "Base image must be staged under the durable state directory."
   );
   const draft = createRound({
     id: roundId,
@@ -231,9 +244,51 @@ async function collectRoundMessages(payload: unknown, store: RoundStateStore): P
       scanIntervalMs: DISCORD_SCAN_INTERVAL_MS
     };
   }
-  const closing = applyRoundEvent(round, {
+  const synthesizing = applyRoundEvent(round, {
     type: "message-collection-filled",
     capturedMessages: collection.captured
+  });
+  await store.save(synthesizing);
+  return {
+    action: "synthesize-feedback",
+    roundId: round.id
+  };
+}
+
+async function preparePromptSynthesis(
+  payload: unknown,
+  store: RoundStateStore
+): Promise<unknown> {
+  const record = requireRecord(payload, "payload");
+  const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
+  if (
+    round.phase !== "synthesizing-feedback" ||
+    round.capturedMessages.length !== round.messageLimit
+  ) {
+    throw new Error(`Round ${round.id} is not ready to synthesize feedback.`);
+  }
+  return {
+    action: "synthesize-prompt",
+    roundId: round.id,
+    capturedMessages: round.capturedMessages
+  };
+}
+
+async function confirmSynthesizedPrompt(
+  payload: unknown,
+  store: RoundStateStore
+): Promise<unknown> {
+  const record = requireRecord(payload, "payload");
+  const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
+  if (round.phase !== "synthesizing-feedback") {
+    throw new Error(`Round ${round.id} is not accepting a Synthesized Prompt.`);
+  }
+  const synthesizedPrompt = validateSynthesizedPrompt(
+    requireString(record.synthesizedPrompt, "payload.synthesizedPrompt")
+  );
+  const closing = applyRoundEvent(round, {
+    type: "synthesized-prompt-confirmed",
+    synthesizedPrompt
   });
   await store.save(closing);
   return {
@@ -246,22 +301,26 @@ async function collectRoundMessages(payload: unknown, store: RoundStateStore): P
     ),
     roundId: round.id,
     channelUrl: round.channelUrl,
-    caption: POLL_CLOSED_MARKER_TEMPLATE.replace("<id>", round.id),
-    capturedMessages: collection.captured
+    caption: [
+      POLL_CLOSED_MARKER_TEMPLATE.replace("<id>", round.id),
+      FINAL_IMAGE_PROMPT_LABEL,
+      synthesizedPrompt
+    ].join("\n")
   };
 }
 
 async function prepareGeneration(payload: unknown, store: RoundStateStore): Promise<unknown> {
   const record = requireRecord(payload, "payload");
   const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
-  if (round.phase !== "ready-to-generate" || round.capturedMessages.length !== round.messageLimit) {
+  if (
+    round.phase !== "ready-to-generate" ||
+    round.capturedMessages.length !== round.messageLimit ||
+    !round.synthesizedPrompt
+  ) {
     throw new Error(`Round ${round.id} is not ready to generate.`);
   }
   const generating = applyRoundEvent(round, { type: "generation-started" });
   await store.save(generating);
-  const feedbackLines = round.capturedMessages
-    .map(({ text }, index) => `${index + 1}. ${text}`)
-    .join("\n");
   return {
     action: "generate-image",
     operationId: createOperationId(
@@ -272,11 +331,15 @@ async function prepareGeneration(payload: unknown, store: RoundStateStore): Prom
     ),
     roundId: round.id,
     baseImagePath: round.baseImagePath,
-    instruction: `${IMAGE_EDIT_PREAMBLE}\n${feedbackLines}\n${IMAGE_EDIT_SUFFIX}`
+    instruction: round.synthesizedPrompt
   };
 }
 
-async function confirmGeneration(payload: unknown, store: RoundStateStore): Promise<unknown> {
+async function confirmGeneration(
+  payload: unknown,
+  store: RoundStateStore,
+  resultImageStagingRoot: string
+): Promise<unknown> {
   const record = requireRecord(payload, "payload");
   const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
   if (round.phase !== "generating") {
@@ -290,7 +353,14 @@ async function confirmGeneration(payload: unknown, store: RoundStateStore): Prom
       resultImagePath,
       "Result image must be an existing PNG, JPEG, or WebP file."
     );
-    event = { type: "generation-succeeded", resultImagePath };
+    event = {
+      type: "generation-succeeded",
+      resultImagePath: await requireStagedImagePath(
+        resultImagePath,
+        resultImageStagingRoot,
+        "Result image must be staged under the durable state directory."
+      )
+    };
   } else if (outcome === "refused") {
     event = { type: "generation-refused" };
   } else if (outcome === "failed") {
@@ -415,7 +485,11 @@ async function requireExistingImage(path: string, errorMessage: string): Promise
   }
 }
 
-async function requireStagedImagePath(path: string, stagingRoot: string): Promise<string> {
+async function requireStagedImagePath(
+  path: string,
+  stagingRoot: string,
+  errorMessage: string
+): Promise<string> {
   let resolvedPath: string;
   let resolvedRoot: string;
   try {
@@ -424,7 +498,7 @@ async function requireStagedImagePath(path: string, stagingRoot: string): Promis
       realpath(resolve(stagingRoot))
     ]);
   } catch {
-    throw new Error("Base image must be staged under the configured runtime directory.");
+    throw new Error(errorMessage);
   }
   const pathFromRoot = relative(resolvedRoot, resolvedPath);
   if (
@@ -433,7 +507,7 @@ async function requireStagedImagePath(path: string, stagingRoot: string): Promis
     pathFromRoot.startsWith(`..${sep}`) ||
     isAbsolute(pathFromRoot)
   ) {
-    throw new Error("Base image must be staged under the configured runtime directory.");
+    throw new Error(errorMessage);
   }
   return resolvedPath;
 }
