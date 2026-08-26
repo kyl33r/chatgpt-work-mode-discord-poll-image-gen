@@ -132,12 +132,7 @@ export async function migrateIsolatedRoundCapsulesV4ToV5(
       throw unsupportedIsolatedState();
     }
     const backupPath = join(migrations, LEGACY_V4_ROUND_BACKUP_FILE);
-    const backup = await open(backupPath, "wx", 0o600).catch(() => {
-      throw unsupportedIsolatedState();
-    });
-    await backup.writeFile(legacyContents, "utf8");
-    await backup.sync();
-    await backup.close();
+    await ensureIsolatedMigrationBackup(backupPath, legacyContents);
     const temporaryPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
     const handle = await open(temporaryPath, "wx", 0o600);
     try {
@@ -153,6 +148,56 @@ export async function migrateIsolatedRoundCapsulesV4ToV5(
     migratedRoundCount += 1;
   }
   return { migratedRoundCount };
+}
+
+async function ensureIsolatedMigrationBackup(
+  backupPath: string,
+  legacyContents: string
+): Promise<void> {
+  try {
+    await requireMatchingRegularBackup(backupPath, legacyContents);
+    return;
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      throw unsupportedIsolatedState();
+    }
+  }
+
+  let backup;
+  try {
+    backup = await open(backupPath, "wx", 0o600);
+  } catch (error) {
+    if (isAlreadyExistsError(error)) {
+      await requireMatchingRegularBackup(backupPath, legacyContents).catch(() => {
+        throw unsupportedIsolatedState();
+      });
+      return;
+    }
+    throw error;
+  }
+  try {
+    await backup.writeFile(legacyContents, "utf8");
+    await backup.sync();
+    await backup.close();
+  } catch (error) {
+    await backup.close().catch(() => undefined);
+    await rm(backupPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function requireMatchingRegularBackup(
+  backupPath: string,
+  expectedContents: string
+): Promise<void> {
+  const metadata = await lstat(backupPath);
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    (await readFile(backupPath, "utf8")) !== expectedContents
+  ) {
+    throw unsupportedIsolatedState();
+  }
 }
 
 export interface SharedStateMigrationPaths {

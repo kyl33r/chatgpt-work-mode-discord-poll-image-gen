@@ -245,6 +245,31 @@ describe("migrateIsolatedRoundCapsulesV4ToV5", () => {
     );
     await expect(access(join(outside, "round-v4.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("resumes when a durable v4 backup exists but round state is still v4", async () => {
+    const root = await mkdtemp(join(tmpdir(), "feedback-round-v5-resume-"));
+    temporaryDirectories.push(root);
+    const roundsRoot = join(root, "rounds");
+    const capsule = join(roundsRoot, "R001");
+    const migrations = join(capsule, "migrations");
+    await mkdir(migrations, { recursive: true });
+    const legacyContents = `${JSON.stringify({
+      schemaVersion: 4,
+      id: "R001",
+      phase: "stopped",
+      baseImagePath: join(capsule, "base-image.png"),
+      channelUrl: "https://discord.test/channels/one",
+      messageLimit: 5,
+      capturedMessages: []
+    }, null, 2)}\n`;
+    await writeFile(join(capsule, "round.json"), legacyContents);
+    await writeFile(join(migrations, "round-v4.json"), legacyContents);
+
+    await expect(migrateIsolatedRoundCapsulesV4ToV5(roundsRoot)).resolves.toEqual({
+      migratedRoundCount: 1
+    });
+    expect(JSON.parse(await readFile(join(capsule, "round.json"), "utf8")).schemaVersion).toBe(5);
+  });
 });
 
 async function createMigrationFixture(overrides: Record<string, unknown> = {}) {
