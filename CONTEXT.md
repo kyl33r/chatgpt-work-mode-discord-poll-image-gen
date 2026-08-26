@@ -21,8 +21,16 @@ The marker-bounded collection of the first configured number of ordinary non-emp
 _Avoid_: Native poll, survey, ballot
 
 **Captured Message**:
-The exact first-observed visible text and stable identity of one eligible Discord message in the Text Poll. Captured Messages remain in arrival order and are never summarized before image editing.
+The exact first-observed visible text and stable identity of one eligible Discord message in the Text Poll. Captured Messages remain frozen in arrival order as the source for one Synthesized Prompt.
 _Avoid_: Candidate, vote, selected feedback
+
+**Synthesized Prompt**:
+The single sanitized visual-edit instruction derived from every frozen Captured Message, posted with the closed marker, persisted once, and used unchanged for the image edit.
+_Avoid_: Feedback summary, regenerated prompt, raw message compilation
+
+**Durable Round State**:
+The restart-critical JSON record and image artifacts stored beneath the worktree-local `.state/` directory.
+_Avoid_: Runtime payload, database
 
 **Result Image**:
 The single edited image produced when the image-edit attempt succeeds.
