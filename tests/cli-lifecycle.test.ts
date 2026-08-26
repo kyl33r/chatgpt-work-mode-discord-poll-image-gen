@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,8 +17,11 @@ describe("round CLI lifecycle", () => {
   it("completes one five-message image round across every external-action boundary", async () => {
     const directory = await mkdtemp(join(tmpdir(), "feedback-round-lifecycle-"));
     temporaryDirectories.push(directory);
-    const store = new JsonRoundStateStore(join(directory, "rounds.json"));
-    const requestedBaseImagePath = join(directory, "base.png");
+    const roundsRoot = join(directory, "rounds");
+    const roundCapsule = join(roundsRoot, "R100");
+    await mkdir(roundCapsule, { recursive: true });
+    const store = new JsonRoundStateStore(roundsRoot);
+    const requestedBaseImagePath = join(roundCapsule, "base-image.png");
     await writeFile(requestedBaseImagePath, "test image fixture", "utf8");
     const baseImagePath = await realpath(requestedBaseImagePath);
 
@@ -31,7 +34,7 @@ describe("round CLI lifecycle", () => {
           channelUrl: "https://discord.test/channels/allowlisted"
         },
         store,
-        { baseImageStagingRoot: directory }
+        { roundCapsulesRoot: roundsRoot }
       )
     ).toMatchObject({
       action: "post-base-image",
@@ -115,14 +118,14 @@ describe("round CLI lifecycle", () => {
       instruction: synthesizedPrompt
     });
 
-    const resultImagePath = join(directory, "result.png");
+    const resultImagePath = join(roundCapsule, "result-image.png");
     await writeFile(resultImagePath, "test result fixture", "utf8");
     const stagedResultImagePath = await realpath(resultImagePath);
     await executeCommand(
       "confirm-generation",
       { roundId: "R100", outcome: "succeeded", resultImagePath },
       store,
-      { resultImageStagingRoot: directory }
+      { roundCapsulesRoot: roundsRoot }
     );
     expect(
       await executeCommand("prepare-publication", { roundId: "R100" }, store)

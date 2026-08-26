@@ -22,6 +22,8 @@ It does not add a Discord bot, webhook, background daemon, OpenAI API client, da
 
 ## Directory boundaries
 
+> Historical schema-three layout below. Schema four uses the isolated capsule layout in [Isolated Round State Capsules](2026-08-26-isolated-round-state-capsules-design.md).
+
 `.state/` is the sole home for restart-critical local data:
 
 ```text
@@ -87,7 +89,7 @@ An uncertain closed-marker post becomes `needs-attention` and is never retried a
 
 `prepare-generation` persists `generating` and returns the staged Base Image plus the exact persisted Synthesized Prompt. The `round-start` skill invokes the current Work-mode agent's installed `$imagegen` skill exactly once as an edit. The repository does not call a provider API.
 
-On success, the agent renders the generated image in the current ChatGPT task, stages the same artifact under `.state/results/`, confirms one structured success outcome, and later uploads that exact file to Discord. Refusal and definitive failure retain the existing controlled public templates. Ambiguous generation enters `needs-attention`.
+On success, the agent renders the generated image in the current ChatGPT task, stages the same artifact inside the active `.state/rounds/<round-id>/` capsule, confirms one structured success outcome, and later uploads that exact file to Discord. Refusal and definitive failure retain the existing controlled public templates. Ambiguous generation enters `needs-attention`.
 
 ### Publish once
 
@@ -121,6 +123,8 @@ Safe restart behavior:
 - `submitting-base`, `closing-collection`, `generating`, and `publishing-outcome` become `needs-attention` because an external side effect may already have occurred.
 
 ## Version-two live-state migration
+
+> Historical v2→v3 migration. The current v3→v4 migration is specified in [Isolated Round State Capsules](2026-08-26-isolated-round-state-capsules-design.md).
 
 The migration is JSON-to-JSON, not a database migration. It runs explicitly and only when `.state/rounds.json` does not exist.
 

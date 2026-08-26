@@ -92,7 +92,9 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     "Never expose secrets or private identifiers",
     "The sole canonical project-skill source is `<project-root>/skills/`",
     "`.agents/skills/` is only a Codex discovery index of symlinks",
-    "Never put raw image-generation errors"
+    "Never put raw image-generation errors",
+    "storage-neutral `RoundStateStore` interface",
+    "Persist each Feedback Round in its own `.state/rounds/<round-id>/` capsule"
   ]) {
     if (!agentInstructions.includes(requiredPolicy)) {
       issues.push(`AGENTS.md is missing required policy: ${requiredPolicy}`);
@@ -141,6 +143,14 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     }
     if (!skillMarkdown.includes("Never access Discord credentials or internal APIs.")) {
       issues.push(`${skillName}: Discord credential and internal-API prohibition is missing.`);
+    }
+    if (
+      (skillName === "submit-base-image" ||
+        skillName === "image-gen" ||
+        skillName === "round-start") &&
+      !skillMarkdown.includes(".state/rounds/<round-id>/")
+    ) {
+      issues.push(`${skillName}: isolated Round State Capsule path is missing.`);
     }
     if (skillName === "round-start") {
       for (const childSkill of ["submit-base-image", "get-discord-polls", "image-gen"]) {

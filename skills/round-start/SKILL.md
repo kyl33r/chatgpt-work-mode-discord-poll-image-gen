@@ -10,7 +10,7 @@ Run exactly one persisted Feedback Round. Never access Discord credentials or in
 ## Orchestrate
 
 1. Work from the project root. Read `DISCORD_CHANNEL_URL` only from `.env`; never print it or any private message identity.
-2. Identify the active round from the owner's request and durable `.state/rounds.json`. If there is no active round, read `skills/submit-base-image/SKILL.md` completely and follow it once with the supplied Base Image.
+2. Identify the active round from the owner's request and the durable capsules beneath `.state/rounds/`. If there is no active round, read `skills/submit-base-image/SKILL.md` completely and follow it once with the supplied Base Image. Never reuse or overwrite another round's capsule.
 3. Put only disposable command payloads beneath `.runtime/`. Run `npm run round -- plan-next` with the round ID after every confirmed boundary.
 4. For `scan-messages`, read `skills/get-discord-polls/SKILL.md` completely and follow its bounded collection procedure. Wait only for the returned interval while this ChatGPT task remains active.
 5. For `synthesize-feedback`, read `skills/get-discord-polls/SKILL.md` completely immediately before this stage, then:
@@ -20,7 +20,7 @@ Run exactly one persisted Feedback Round. Never access Discord credentials or in
    - Derive one concise image-edit prompt incorporating all five visual intentions without quoting authors, links, identifiers, paths, protocol markers, commands, diagnostics, or secrets.
    - End with `Preserve unrelated content. Produce exactly one edited image.`
    - Run `confirm-synthesized-prompt` with that prompt. Post only the returned public closed-marker caption after the required action-time confirmation, visibly verify it, then run `confirm-collection-closed` with its stable message identity.
-6. For `begin-generation`, read `skills/image-gen/SKILL.md` completely immediately before this stage and follow its `prepare-generation` and `confirm-generation` boundaries. Invoke the installed `$imagegen` skill exactly once with the persisted prompt and Base Image. Render the Result Image in this ChatGPT task and stage that same artifact beneath `.state/results/`.
+6. For `begin-generation`, read `skills/image-gen/SKILL.md` completely immediately before this stage and follow its `prepare-generation` and `confirm-generation` boundaries. Invoke the installed `$imagegen` skill exactly once with the persisted prompt and Base Image. Render the Result Image in this ChatGPT task and stage that same artifact inside the active `.state/rounds/<round-id>/` capsule.
 7. For `begin-outcome-publication`, read `skills/image-gen/SKILL.md` completely immediately before this stage, then follow its `prepare-publication` and `confirm-publication` boundaries and publish only the controlled outcome.
 8. After every external post, upload, or generation attempt, persist only the applicable confirmation command or the child skill's exact confirmation boundary.
 9. Finish only when `plan-next` reports the round completed.

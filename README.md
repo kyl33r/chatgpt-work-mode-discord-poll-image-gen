@@ -33,7 +33,7 @@ Participant reference images, native voting, and subsequent edit rounds are defe
 
 ## Local state
 
-The first implementation persists restart-critical JSON and images beneath the worktree-local, gitignored `.state/` directory. `.runtime/` contains only disposable command payloads. Storage is accessed through a replaceable boundary; local `.state/rounds.sqlite` is introduced only if real concurrency, transactional, query, recovery, or performance needs demonstrate that JSON is no longer sustainable.
+The first implementation persists each round independently beneath `.state/rounds/<round-id>/`, with its own `round.json`, Base Image, Result Image, and migration backups. Updating one round never rewrites another round's files. `.runtime/` contains only disposable command payloads. CLI and domain behavior use the replaceable `RoundStateStore` interface; a local SQLite adapter can implement the same contract if real concurrency, transactional, query, recovery, or performance needs demonstrate that JSON is no longer suitable.
 
 ## Local verification
 
@@ -56,5 +56,7 @@ See [Discord setup](docs/discord-setup.md) before running the supervised browser
 - [ADR 0003: canonical skills with discovery symlinks](docs/adr/0003-canonical-skills-with-discovery-symlinks.md)
 - [ADR 0004: durable state under `.state/`](docs/adr/0004-store-durable-round-state-under-state.md)
 - [ADR 0005: persist one public synthesized prompt](docs/adr/0005-persist-one-public-synthesized-prompt.md)
+- [ADR 0006: isolated storage-neutral round state](docs/adr/0006-isolate-round-state-behind-storage-interface.md)
+- [Isolated Round State Capsules design](docs/superpowers/specs/2026-08-26-isolated-round-state-capsules-design.md)
 
 The existing bot-based experiment remains separate in `kyl33r/discord-image-feedback-relay`.

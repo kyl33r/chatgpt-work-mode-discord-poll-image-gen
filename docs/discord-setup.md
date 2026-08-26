@@ -26,7 +26,7 @@ PNG, JPEG, and WebP are supported. Supply the base image in either of these ways
 - attach it to the current ChatGPT conversation; or
 - paste the exact Discord message link containing one image in the allowlisted channel.
 
-The skill stages the selected image under gitignored `.state/base-images/`. It does not crawl the channel for images, and it rejects ambiguous messages containing multiple images. A bare Discord CDN URL is rejected when it cannot be tied to the allowlisted channel.
+The skill stages the selected image inside its gitignored `.state/rounds/<round-id>/` capsule. It does not crawl the channel for images, and it rejects ambiguous messages containing multiple images. A bare Discord CDN URL is rejected when it cannot be tied to the allowlisted channel.
 
 ## Run one supervised round
 
@@ -41,7 +41,7 @@ The skills request confirmation at live posting boundaries when required. If Dis
 
 ## Local state and troubleshooting
 
-Restart-critical state lives beneath `.state/` inside this worktree. JSON, Base Images, Result Images, and migration backups are ignored by Git and contain no credentials. `.runtime/` contains only disposable command payloads.
+Restart-critical state lives in isolated `.state/rounds/<round-id>/` capsules inside this worktree. Each capsule owns one `round.json`, its Base Image, Result Image, and migration backups; updating one cannot overwrite another. All are ignored by Git and contain no credentials. `.runtime/` contains only disposable command payloads.
 
 - Do not delete or hand-edit state during an active round.
 - Run `npm run round -- plan-next` with a JSON payload containing the round ID to inspect the next safe action.

@@ -1,10 +1,12 @@
-import { access, mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { migrateLegacyState } from "../src/round/state-migration.js";
+import { migrateSharedRoundState } from "../src/round/state-migration.js";
+import { createRound } from "../src/round/round-state.js";
+import { JsonRoundStateStore } from "../src/round/round-state-store.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -12,143 +14,115 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })));
 });
 
-describe("migrateLegacyState", () => {
-  it("moves the one supported frozen v2 round into durable v3 state", async () => {
+describe("migrateSharedRoundState", () => {
+  it("moves the supported shared v3 round into one isolated v4 capsule", async () => {
     const paths = await createMigrationFixture();
 
-    expect(await migrateLegacyState(paths)).toEqual({
+    expect(await migrateSharedRoundState(paths)).toEqual({
       migrated: true,
       roundId: "R001",
       phase: "synthesizing-feedback"
     });
 
-    const migrated = JSON.parse(await readFile(paths.newStatePath, "utf8"));
+    const capsule = join(paths.roundsRoot, "R001");
+    const migrated = JSON.parse(await readFile(join(capsule, "round.json"), "utf8"));
     expect(migrated).toMatchObject({
-      schemaVersion: 3,
-      rounds: [
-        {
-          schemaVersion: 3,
-          id: "R001",
-          phase: "synthesizing-feedback",
-          messageLimit: 5
-        }
-      ]
+      schemaVersion: 4,
+      id: "R001",
+      phase: "synthesizing-feedback",
+      messageLimit: 5
     });
-    expect(migrated.rounds[0].capturedMessages).toHaveLength(5);
-    expect(migrated.rounds[0].capturedMessages.map((message: { text: string }) => message.text)).toEqual([
-      "change 1",
-      "change 2",
-      "change 3",
-      "change 4",
-      "change 5"
-    ]);
-    expect(migrated.rounds[0].baseImagePath).toBe(
-      join(paths.newBaseImageRoot, "R001.png")
+    expect(migrated.capturedMessages).toHaveLength(5);
+    expect(migrated.baseImagePath).toBe(join(capsule, "base-image.png"));
+    expect(await readFile(migrated.baseImagePath, "utf8")).toBe("base image");
+    expect(await readFile(join(capsule, "migrations", "rounds-v3.json"), "utf8")).toContain(
+      '"schemaVersion": 3'
     );
-    expect(await readFile(migrated.rounds[0].baseImagePath, "utf8")).toBe("base image");
-    expect(await readFile(join(paths.migrationRoot, "rounds-v2.json"), "utf8")).toContain(
-      '"schemaVersion": 2'
+    expect(await readFile(join(capsule, "migrations", "rounds-v2.json"), "utf8")).toBe(
+      "legacy v2 backup"
     );
-    expect(await readFile(paths.legacyStatePath, "utf8")).toContain('"schemaVersion": 2');
+    expect(await readFile(paths.legacyStatePath, "utf8")).toContain('"schemaVersion": 3');
   });
 
-  it("rejects every other legacy shape without creating durable state", async () => {
+  it("preserves an existing isolated terminal round", async () => {
+    const paths = await createMigrationFixture();
+    const store = new JsonRoundStateStore(paths.roundsRoot);
+    await store.save({ ...createRound({
+      id: "R000",
+      baseImagePath: join(paths.roundsRoot, "R000", "base-image.png"),
+      channelUrl: "https://discord.test/channels/allowlisted",
+      messageLimit: 5
+    }), phase: "stopped" });
+    const before = await readFile(join(paths.roundsRoot, "R000", "round.json"), "utf8");
+
+    await migrateSharedRoundState(paths);
+
+    expect(await readFile(join(paths.roundsRoot, "R000", "round.json"), "utf8")).toBe(before);
+    expect((await store.list()).map(({ id }) => id)).toEqual(["R000", "R001"]);
+  });
+
+  it("recognizes an already completed matching capsule", async () => {
+    const paths = await createMigrationFixture();
+    await migrateSharedRoundState(paths);
+
+    await expect(migrateSharedRoundState(paths)).resolves.toEqual({
+      migrated: true,
+      roundId: "R001",
+      phase: "synthesizing-feedback"
+    });
+  });
+
+  it("rejects an unsupported shared shape without a visible destination capsule", async () => {
     const paths = await createMigrationFixture({ phase: "collecting-messages" });
 
-    await expect(migrateLegacyState(paths)).rejects.toThrow(
-      "Legacy state is not the supported frozen live round."
+    await expect(migrateSharedRoundState(paths)).rejects.toThrow(
+      "Shared round state is not the supported live schema-three round."
     );
-    await expect(access(paths.newStatePath)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(access(paths.newBaseImageRoot)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(access(paths.migrationRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(join(paths.roundsRoot, "R001"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("rejects a legacy round that already contains synthesis data", async () => {
-    const paths = await createMigrationFixture({ synthesizedPrompt: "unexpected" });
+  it("rejects a Base Image symlink escape without a visible destination capsule", async () => {
+    const paths = await createMigrationFixture();
+    const outsideImage = join(paths.root, "outside.png");
+    await writeFile(outsideImage, "outside", "utf8");
+    await rm(paths.legacyBaseImagePath);
+    await symlink(outsideImage, paths.legacyBaseImagePath);
 
-    await expect(migrateLegacyState(paths)).rejects.toThrow(
-      "Legacy state is not the supported frozen live round."
+    await expect(migrateSharedRoundState(paths)).rejects.toThrow(
+      "Shared round state is not the supported live schema-three round."
     );
-    await expect(access(paths.newStatePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(join(paths.roundsRoot, "R001"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("refuses to overwrite existing durable state", async () => {
+  it("fails closed on an existing mismatched destination capsule", async () => {
     const paths = await createMigrationFixture();
-    await mkdir(join(paths.newStatePath, ".."), { recursive: true });
-    await writeFile(paths.newStatePath, "existing", "utf8");
+    const capsule = join(paths.roundsRoot, "R001");
+    await mkdir(capsule, { recursive: true });
+    await writeFile(join(capsule, "round.json"), "{}", "utf8");
 
-    await expect(migrateLegacyState(paths)).rejects.toThrow(
-      "Durable round state already exists; migration was not run."
+    await expect(migrateSharedRoundState(paths)).rejects.toThrow(
+      "Existing Round State Capsule does not match the shared round."
     );
-    expect(await readFile(paths.newStatePath, "utf8")).toBe("existing");
-  });
-
-  it("preserves unrelated durable directories when rounds.json does not exist", async () => {
-    const paths = await createMigrationFixture();
-    const unrelatedDirectory = join(paths.newStatePath, "..", "results");
-    await mkdir(unrelatedDirectory, { recursive: true });
-
-    await expect(migrateLegacyState(paths)).resolves.toMatchObject({ migrated: true });
-    await expect(access(unrelatedDirectory)).resolves.toBeUndefined();
-    await expect(access(paths.newStatePath)).resolves.toBeUndefined();
-  });
-
-  it("recovers an interrupted marked migration before retrying", async () => {
-    const paths = await createMigrationFixture();
-    const partialBaseImagePath = join(paths.newBaseImageRoot, "R001.png");
-    const partialBackupPath = join(paths.migrationRoot, "rounds-v2.json");
-    const transactionPath = join(paths.migrationRoot, "v2-to-v3-transaction");
-    await mkdir(paths.newBaseImageRoot, { recursive: true });
-    await mkdir(paths.migrationRoot, { recursive: true });
-    await writeFile(partialBaseImagePath, "partial", "utf8");
-    await writeFile(partialBackupPath, "partial", "utf8");
-    await writeFile(transactionPath, "in-progress\n", "utf8");
-
-    await expect(migrateLegacyState(paths)).resolves.toMatchObject({ migrated: true });
-    expect(await readFile(partialBaseImagePath, "utf8")).toBe("base image");
-    expect(await readFile(partialBackupPath, "utf8")).toContain('"schemaVersion": 2');
-    await expect(access(transactionPath)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("recognizes a marked migration whose state commit completed", async () => {
-    const paths = await createMigrationFixture();
-    await migrateLegacyState(paths);
-    const transactionPath = join(paths.migrationRoot, "v2-to-v3-transaction");
-    await writeFile(transactionPath, "in-progress\n", "utf8");
-
-    await expect(migrateLegacyState(paths)).resolves.toEqual({
-      migrated: true,
-      roundId: "R001",
-      phase: "synthesizing-feedback"
-    });
-    await expect(access(transactionPath)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("removes staged output when commit preparation fails", async () => {
-    const paths = await createMigrationFixture();
-    const stateRoot = join(paths.newStatePath, "..");
-    paths.newStatePath = paths.newBaseImageRoot;
-
-    await expect(migrateLegacyState(paths)).rejects.toThrow();
-    await expect(access(stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
 async function createMigrationFixture(overrides: Record<string, unknown> = {}) {
   const root = await mkdtemp(join(tmpdir(), "feedback-round-migration-"));
   temporaryDirectories.push(root);
-  const legacyBaseImageRoot = join(root, ".runtime", "base-images");
-  const legacyStatePath = join(root, ".runtime", "rounds.json");
-  const newBaseImageRoot = join(root, ".state", "base-images");
-  const newStatePath = join(root, ".state", "rounds.json");
-  const migrationRoot = join(root, ".state", "migrations");
+  const stateRoot = join(root, ".state");
+  const legacyBaseImageRoot = join(stateRoot, "base-images");
+  const legacyMigrationRoot = join(stateRoot, "migrations");
+  const legacyStatePath = join(stateRoot, "rounds.json");
+  const roundsRoot = join(stateRoot, "rounds");
   await mkdir(legacyBaseImageRoot, { recursive: true });
-  const legacyBaseImagePath = join(legacyBaseImageRoot, "base.png");
+  await mkdir(legacyMigrationRoot, { recursive: true });
+  const legacyBaseImagePath = join(legacyBaseImageRoot, "R001.png");
   await writeFile(legacyBaseImagePath, "base image", "utf8");
+  await writeFile(join(legacyMigrationRoot, "rounds-v2.json"), "legacy v2 backup", "utf8");
   const round = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     id: "R001",
-    phase: "closing-collection",
+    phase: "synthesizing-feedback",
     baseImagePath: legacyBaseImagePath,
     channelUrl: "https://discord.test/channels/allowlisted",
     messageLimit: 5,
@@ -165,14 +139,15 @@ async function createMigrationFixture(overrides: Record<string, unknown> = {}) {
   };
   await writeFile(
     legacyStatePath,
-    `${JSON.stringify({ schemaVersion: 2, rounds: [round] }, null, 2)}\n`,
+    `${JSON.stringify({ schemaVersion: 3, rounds: [round] }, null, 2)}\n`,
     "utf8"
   );
   return {
+    root,
     legacyStatePath,
-    newStatePath,
     legacyBaseImageRoot,
-    newBaseImageRoot,
-    migrationRoot
+    legacyBaseImagePath,
+    legacyMigrationRoot,
+    roundsRoot
   };
 }

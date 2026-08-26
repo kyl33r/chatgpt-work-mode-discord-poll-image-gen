@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,11 +22,25 @@ describe("executeCommand", () => {
   it("prepares one Base Image post with the configured marker and message limit", async () => {
     const directory = await mkdtemp(join(tmpdir(), "feedback-round-cli-"));
     temporaryDirectories.push(directory);
-    const stagingRoot = join(directory, "base-images");
-    await mkdir(stagingRoot);
-    const baseImagePath = join(stagingRoot, "base.png");
+    const roundsRoot = join(directory, "rounds");
+    const roundCapsule = join(roundsRoot, "RSTART");
+    await mkdir(roundCapsule, { recursive: true });
+    const baseImagePath = join(roundCapsule, "base-image.png");
     await writeFile(baseImagePath, "image", "utf8");
-    const store = new JsonRoundStateStore(join(directory, "rounds.json"));
+    const store = new JsonRoundStateStore(roundsRoot);
+    await store.save({
+      ...createRound({
+        id: "ROLD",
+        baseImagePath: join(roundsRoot, "ROLD", "base-image.png"),
+        channelUrl: "https://discord.test/channels/allowlisted",
+        messageLimit: 5
+      }),
+      phase: "stopped"
+    });
+    const priorRoundBytes = await readFile(
+      join(roundsRoot, "ROLD", "round.json"),
+      "utf8"
+    );
 
     expect(
       await executeCommand(
@@ -37,7 +51,7 @@ describe("executeCommand", () => {
           channelUrl: "https://discord.test/channels/allowlisted"
         },
         store,
-        { baseImageStagingRoot: stagingRoot }
+        { roundCapsulesRoot: roundsRoot }
       )
     ).toMatchObject({
       action: "post-base-image",
@@ -50,6 +64,9 @@ describe("executeCommand", () => {
       messageLimit: 5,
       capturedMessages: []
     });
+    await expect(readFile(join(roundsRoot, "ROLD", "round.json"), "utf8")).resolves.toBe(
+      priorRoundBytes
+    );
 
     expect(
       await executeCommand(
@@ -291,11 +308,12 @@ describe("executeCommand", () => {
   it("rejects an existing Base Image outside the staging root and through a symlink escape", async () => {
     const directory = await mkdtemp(join(tmpdir(), "feedback-round-cli-"));
     temporaryDirectories.push(directory);
-    const stagingRoot = join(directory, "base-images");
+    const stagingRoot = join(directory, "rounds");
+    const roundCapsule = join(stagingRoot, "ROUTSIDE");
     const outsideImagePath = join(directory, "outside.png");
-    await mkdir(stagingRoot);
+    await mkdir(roundCapsule, { recursive: true });
     await writeFile(outsideImagePath, "image", "utf8");
-    const store = new JsonRoundStateStore(join(directory, "rounds.json"));
+    const store = new JsonRoundStateStore(stagingRoot);
 
     await expect(
       executeCommand(
@@ -306,11 +324,13 @@ describe("executeCommand", () => {
           channelUrl: "https://discord.test/channels/allowlisted"
         },
         store,
-        { baseImageStagingRoot: stagingRoot }
+        { roundCapsulesRoot: stagingRoot }
       )
     ).rejects.toThrow("Base image must be staged under the durable state directory.");
 
-    const linkedImagePath = join(stagingRoot, "linked.png");
+    const linkedRoundCapsule = join(stagingRoot, "RSYMLINK");
+    await mkdir(linkedRoundCapsule, { recursive: true });
+    const linkedImagePath = join(linkedRoundCapsule, "linked.png");
     await symlink(outsideImagePath, linkedImagePath);
     await expect(
       executeCommand(
@@ -321,7 +341,7 @@ describe("executeCommand", () => {
           channelUrl: "https://discord.test/channels/allowlisted"
         },
         store,
-        { baseImageStagingRoot: stagingRoot }
+        { roundCapsulesRoot: stagingRoot }
       )
     ).rejects.toThrow("Base image must be staged under the durable state directory.");
   });
@@ -329,11 +349,11 @@ describe("executeCommand", () => {
   it("rejects a Result Image outside the durable staging root", async () => {
     const directory = await mkdtemp(join(tmpdir(), "feedback-round-cli-"));
     temporaryDirectories.push(directory);
-    const resultRoot = join(directory, ".state", "results");
-    await mkdir(resultRoot, { recursive: true });
+    const resultRoot = join(directory, ".state", "rounds");
+    await mkdir(join(resultRoot, "RRESULT"), { recursive: true });
     const outsideImagePath = join(directory, "outside.png");
     await writeFile(outsideImagePath, "image", "utf8");
-    const store = new JsonRoundStateStore(join(directory, "rounds.json"));
+    const store = new JsonRoundStateStore(resultRoot);
     await store.save(readyRound("RRESULT"));
     await executeCommand("prepare-generation", { roundId: "RRESULT" }, store);
 
@@ -342,7 +362,20 @@ describe("executeCommand", () => {
         "confirm-generation",
         { roundId: "RRESULT", outcome: "succeeded", resultImagePath: outsideImagePath },
         store,
-        { resultImageStagingRoot: resultRoot }
+        { roundCapsulesRoot: resultRoot }
+      )
+    ).rejects.toThrow("Result image must be staged under the durable state directory.");
+
+    const otherCapsule = join(resultRoot, "ROTHER");
+    await mkdir(otherCapsule, { recursive: true });
+    const otherRoundImage = join(otherCapsule, "result-image.png");
+    await writeFile(otherRoundImage, "image", "utf8");
+    await expect(
+      executeCommand(
+        "confirm-generation",
+        { roundId: "RRESULT", outcome: "succeeded", resultImagePath: otherRoundImage },
+        store,
+        { roundCapsulesRoot: resultRoot }
       )
     ).rejects.toThrow("Result image must be staged under the durable state directory.");
   });
@@ -419,5 +452,5 @@ function captured(index: number) {
 async function createStore(): Promise<JsonRoundStateStore> {
   const directory = await mkdtemp(join(tmpdir(), "feedback-round-cli-"));
   temporaryDirectories.push(directory);
-  return new JsonRoundStateStore(join(directory, "rounds.json"));
+  return new JsonRoundStateStore(join(directory, "rounds"));
 }

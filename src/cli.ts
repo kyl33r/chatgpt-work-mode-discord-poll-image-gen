@@ -15,7 +15,7 @@ import {
   POLL_START_MARKER_TEMPLATE,
   RESULT_IMAGE_STAGING_ROOT,
   RESULT_MARKER_TEMPLATE,
-  ROUND_STATE_PATH,
+  ROUND_STATE_ROOT,
   SUPPORTED_IMAGE_EXTENSIONS
 } from "./constants.js";
 import {
@@ -31,6 +31,7 @@ import {
   type RoundPhase
 } from "./round/round-state.js";
 import { validateSynthesizedPrompt } from "./round/synthesized-prompt.js";
+import { roundCapsuleDirectory } from "./round/round-paths.js";
 import {
   JsonRoundStateStore,
   type RoundStateStore
@@ -38,8 +39,7 @@ import {
 
 interface CommandOptions {
   allowedChannelUrl?: string;
-  baseImageStagingRoot?: string;
-  resultImageStagingRoot?: string;
+  roundCapsulesRoot?: string;
 }
 
 export async function executeCommand(
@@ -53,7 +53,7 @@ export async function executeCommand(
     return prepareBaseSubmission(
       payload,
       store,
-      options.baseImageStagingRoot ?? BASE_IMAGE_STAGING_ROOT
+      options.roundCapsulesRoot ?? BASE_IMAGE_STAGING_ROOT
     );
   }
   if (command === "confirm-base-submission") {
@@ -88,7 +88,7 @@ export async function executeCommand(
     return confirmGeneration(
       payload,
       store,
-      options.resultImageStagingRoot ?? RESULT_IMAGE_STAGING_ROOT
+      options.roundCapsulesRoot ?? RESULT_IMAGE_STAGING_ROOT
     );
   }
   if (command === "prepare-publication") {
@@ -164,7 +164,7 @@ async function prepareBaseSubmission(
   );
   const baseImagePath = await requireStagedImagePath(
     requestedBaseImagePath,
-    baseImageStagingRoot,
+    roundCapsuleDirectory(baseImageStagingRoot, roundId),
     "Base image must be staged under the durable state directory."
   );
   const draft = createRound({
@@ -357,7 +357,7 @@ async function confirmGeneration(
       type: "generation-succeeded",
       resultImagePath: await requireStagedImagePath(
         resultImagePath,
-        resultImageStagingRoot,
+        roundCapsuleDirectory(resultImageStagingRoot, round.id),
         "Result image must be staged under the durable state directory."
       )
     };
@@ -611,7 +611,7 @@ async function main(): Promise<void> {
   const result = await executeCommand(
     command,
     JSON.parse(rawPayload) as unknown,
-    new JsonRoundStateStore(ROUND_STATE_PATH),
+    new JsonRoundStateStore(ROUND_STATE_ROOT),
     { allowedChannelUrl }
   );
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

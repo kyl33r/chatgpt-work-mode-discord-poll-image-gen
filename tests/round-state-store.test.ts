@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createRound } from "../src/round/round-state.js";
+import { createRound, type RoundState } from "../src/round/round-state.js";
 import { JsonRoundStateStore } from "../src/round/round-state-store.js";
 
 const temporaryDirectories: string[] = [];
@@ -14,36 +14,72 @@ afterEach(async () => {
 });
 
 describe("JsonRoundStateStore", () => {
-  it("persists and reloads rounds while ignoring an abandoned temporary write", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "feedback-round-store-"));
-    temporaryDirectories.push(directory);
-    const statePath = join(directory, "rounds.json");
-    const store = new JsonRoundStateStore(statePath);
-    const round = createRound({
-      id: "R001",
-      baseImagePath: "/tmp/base.png",
-      channelUrl: "https://discord.test/channels/one",
-      messageLimit: 5
-    });
+  it("persists each round in an isolated capsule without rewriting another round", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const store = new JsonRoundStateStore(roundsRoot);
+    const first = round("R001");
+    const second = round("R002");
 
-    await store.save(round);
-    await writeFile(`${statePath}.tmp`, "truncated", "utf8");
+    await store.save(first);
+    const firstPath = join(roundsRoot, "R001", "round.json");
+    const firstBytes = await readFile(firstPath, "utf8");
+    await store.save(second);
+    await store.save({ ...second, phase: "stopped" });
 
-    expect(await store.get("R001")).toEqual(round);
-    expect(JSON.parse(await readFile(statePath, "utf8"))).toEqual({
-      schemaVersion: 3,
-      rounds: [round]
+    expect(await readFile(firstPath, "utf8")).toBe(firstBytes);
+    expect(JSON.parse(firstBytes)).toEqual(first);
+    expect(JSON.parse(await readFile(join(roundsRoot, "R002", "round.json"), "utf8"))).toEqual({
+      ...second,
+      phase: "stopped"
     });
   });
 
-  it("rejects obsolete native-poll state instead of reinterpreting it", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "feedback-round-store-"));
-    temporaryDirectories.push(directory);
-    const statePath = join(directory, "rounds.json");
-    await writeFile(statePath, '{"schemaVersion":1,"rounds":[]}', "utf8");
+  it("reloads every persisted capsule in deterministic identifier order", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const store = new JsonRoundStateStore(roundsRoot);
+    await store.save(round("R002"));
+    await store.save(round("R001"));
+    await writeFile(join(roundsRoot, "R001", "round.json.abandoned.tmp"), "truncated", "utf8");
 
-    await expect(new JsonRoundStateStore(statePath).list()).rejects.toThrow(
-      "Unsupported or malformed round-state file."
+    expect((await new JsonRoundStateStore(roundsRoot).list()).map(({ id }) => id)).toEqual([
+      "R001",
+      "R002"
+    ]);
+  });
+
+  it("fails closed on malformed, mismatched, and unsafe capsule identities", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const capsule = join(roundsRoot, "R001");
+    await mkdir(capsule, { recursive: true });
+    await writeFile(
+      join(capsule, "round.json"),
+      JSON.stringify({ ...round("R002"), schemaVersion: 4 }),
+      "utf8"
+    );
+
+    await expect(new JsonRoundStateStore(roundsRoot).list()).rejects.toThrow(
+      "Unsupported or malformed Round State Capsule."
+    );
+    await expect(new JsonRoundStateStore(roundsRoot).get("../R001")).rejects.toThrow(
+      "Round ID is not safe for local storage."
     );
   });
 });
+
+function round(id: string): RoundState {
+  return createRound({
+    id,
+    baseImagePath: `/tmp/${id}.png`,
+    channelUrl: "https://discord.test/channels/one",
+    messageLimit: 5
+  });
+}
+
+async function temporaryDirectory(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "feedback-round-store-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
