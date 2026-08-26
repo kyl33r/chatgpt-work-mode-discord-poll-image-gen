@@ -83,6 +83,24 @@ describe("JsonRoundStateStore", () => {
     );
     await expect(readFile(secondPath, "utf8")).resolves.toBe(secondBytes);
   });
+
+  it("rejects a round.json symlink outside the capsule", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const capsule = join(roundsRoot, "R001");
+    const outsideState = join(directory, "outside.json");
+    await mkdir(capsule, { recursive: true });
+    await writeFile(outsideState, `${JSON.stringify(round("R001"))}\n`, "utf8");
+    await symlink(outsideState, join(capsule, "round.json"));
+    const store = new JsonRoundStateStore(roundsRoot);
+
+    await expect(store.get("R001")).rejects.toThrow(
+      "Unsupported or malformed Round State Capsule."
+    );
+    await expect(store.list()).rejects.toThrow(
+      "Unsupported or malformed Round State Capsule."
+    );
+  });
 });
 
 function round(id: string): RoundState {

@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { access, copyFile, mkdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
+import { access, copyFile, lstat, mkdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
@@ -131,7 +131,7 @@ async function matchingDestinationExists(
       LEGACY_V3_STATE_BACKUP_FILE
     );
     if (
-      (await readFile(migratedV3Path, "utf8")) !== legacyContents ||
+      (await readRegularFile(migratedV3Path, "utf8")) !== legacyContents ||
       !(await filesMatch(legacyBaseImagePath, finalBaseImagePath))
     ) {
       return false;
@@ -150,8 +150,18 @@ async function matchingDestinationExists(
 }
 
 async function filesMatch(leftPath: string, rightPath: string): Promise<boolean> {
-  const [left, right] = await Promise.all([readFile(leftPath), readFile(rightPath)]);
+  const [left, right] = await Promise.all([readFile(leftPath), readRegularFile(rightPath)]);
   return left.equals(right);
+}
+
+async function readRegularFile(path: string): Promise<Buffer>;
+async function readRegularFile(path: string, encoding: "utf8"): Promise<string>;
+async function readRegularFile(path: string, encoding?: "utf8"): Promise<Buffer | string> {
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("Migration destination artifact is not a regular file.");
+  }
+  return encoding ? readFile(path, encoding) : readFile(path);
 }
 
 async function copyOptionalV2Backup(

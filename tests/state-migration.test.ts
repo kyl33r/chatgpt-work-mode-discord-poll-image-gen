@@ -82,6 +82,30 @@ describe("migrateSharedRoundState", () => {
     );
   });
 
+  it("rejects a destination whose Base Image is only a symlink to the legacy image", async () => {
+    const paths = await createMigrationFixture();
+    await migrateSharedRoundState(paths);
+    const destination = join(paths.roundsRoot, "R001", "base-image.png");
+    await rm(destination);
+    await symlink(paths.legacyBaseImagePath, destination);
+
+    await expect(migrateSharedRoundState(paths)).rejects.toThrow(
+      "Existing Round State Capsule does not match the shared round."
+    );
+  });
+
+  it("rejects a destination whose migration backup is only a symlink", async () => {
+    const paths = await createMigrationFixture();
+    await migrateSharedRoundState(paths);
+    const destination = join(paths.roundsRoot, "R001", "migrations", "rounds-v3.json");
+    await rm(destination);
+    await symlink(paths.legacyStatePath, destination);
+
+    await expect(migrateSharedRoundState(paths)).rejects.toThrow(
+      "Existing Round State Capsule does not match the shared round."
+    );
+  });
+
   it("rejects an unsupported shared shape without a visible destination capsule", async () => {
     const paths = await createMigrationFixture({ phase: "collecting-messages" });
 

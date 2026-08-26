@@ -45,17 +45,23 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     assertSafeRoundId(roundId);
     let resolvedPath: string;
     let resolvedCapsule: string;
+    let resolvedRoot: string;
+    const expectedCapsule = resolve(roundCapsuleDirectory(this.roundsRoot, roundId));
+    const expectedCapsuleFromRoot = relative(resolve(this.roundsRoot), expectedCapsule);
     try {
-      [resolvedPath, resolvedCapsule] = await Promise.all([
+      [resolvedPath, resolvedCapsule, resolvedRoot] = await Promise.all([
         realpath(resolve(candidatePath)),
-        realpath(roundCapsuleDirectory(this.roundsRoot, roundId))
+        realpath(expectedCapsule),
+        realpath(resolve(this.roundsRoot))
       ]);
     } catch {
       throw new Error(errorMessage);
     }
     const pathFromCapsule = relative(resolvedCapsule, resolvedPath);
+    const capsuleFromRoot = relative(resolvedRoot, resolvedCapsule);
     const extension = extname(resolvedPath).toLowerCase();
     if (
+      capsuleFromRoot !== expectedCapsuleFromRoot ||
       pathFromCapsule.length === 0 ||
       pathFromCapsule === ".." ||
       pathFromCapsule.startsWith(`..${sep}`) ||

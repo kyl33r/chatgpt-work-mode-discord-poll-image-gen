@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { ROUND_SCHEMA_VERSION, ROUND_STATE_FILE_NAME } from "../constants.js";
@@ -95,6 +95,10 @@ export class JsonRoundStateStore implements RoundStateStore {
 async function readRoundState(statePath: string, expectedRoundId: string): Promise<RoundState> {
   let parsed: unknown;
   try {
+    const metadata = await lstat(statePath);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw malformedCapsule();
+    }
     parsed = JSON.parse(await readFile(statePath, "utf8")) as unknown;
   } catch (error) {
     if (isMissingFileError(error)) {
