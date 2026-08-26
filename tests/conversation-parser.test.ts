@@ -106,6 +106,25 @@ describe("parseConversation", () => {
     );
   });
 
+  it("retains a boundary error for invalid coverage proof when checkpointing", () => {
+    const request = validParseRequest();
+    const privateSegmentStart = "discord-message:private-invalid-coverage-start";
+
+    expectControlledParserError(
+      () =>
+        parseConversation({
+          ...request,
+          checkpoint: checkpointFrom(parseConversation(request)),
+          observation: {
+            ...request.observation,
+            coverage: { kind: "contiguous-visible-segment", segmentStart: messageIdentity(privateSegmentStart) }
+          }
+        } as never),
+      privateSegmentStart,
+      "ConversationBoundaryError"
+    );
+  });
+
   it("fails closed when a no-boundary checkpoint changes its segment start", () => {
     const segmentStart = messageIdentity("discord-message:segment-start");
     const initial = parseConversation({

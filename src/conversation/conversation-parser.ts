@@ -142,9 +142,9 @@ export function parseConversation(request: ConversationParseRequest): Conversati
   } catch (error) {
     if (
       hasCheckpoint(request) &&
-      (error instanceof ConversationDestinationError ||
-        error instanceof ConversationBoundaryError ||
-        error instanceof ConversationOrderError)
+      (error instanceof ConversationOrderError ||
+        ((error instanceof ConversationDestinationError || error instanceof ConversationBoundaryError) &&
+          hasCheckpointAuthorityDrift(request)))
     ) {
       throw new ConversationCheckpointError();
     }
@@ -561,6 +561,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasCheckpoint(value: unknown): boolean {
   return isRecord(value) && value.checkpoint !== undefined;
+}
+
+function hasCheckpointAuthorityDrift(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.observation)) {
+    return false;
+  }
+
+  const observation = value.observation;
+  return (
+    (isNonEmptyString(value.destination) &&
+      isNonEmptyString(observation.destination) &&
+      value.destination !== observation.destination) ||
+    (isOptionalStableIdentity(value.boundary) &&
+      isOptionalStableIdentity(observation.boundary) &&
+      value.boundary !== observation.boundary)
+  );
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isOptionalStableIdentity(value: unknown): value is string | undefined {
+  return value === undefined || isNonEmptyString(value);
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
