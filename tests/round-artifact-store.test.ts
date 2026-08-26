@@ -85,6 +85,21 @@ describe("JsonRoundArtifactStore", () => {
     ).rejects.toMatchObject({ code: "EEXIST" });
   });
 
+  it("rejects a Result Image file symlink even within the source capsule", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const sourceCapsule = join(roundsRoot, "R001");
+    await mkdir(sourceCapsule, { recursive: true });
+    const realSource = join(sourceCapsule, "real-result.png");
+    const linkedSource = join(sourceCapsule, "result-image.png");
+    await writeFile(realSource, "source", "utf8");
+    await symlink(realSource, linkedSource);
+
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).copyResultAsBase("R001", "R002", linkedSource)
+    ).rejects.toThrow("Recorded result image is missing or unsupported.");
+  });
+
   it("rejects an in-root capsule symlink to another round", async () => {
     const directory = await temporaryDirectory();
     const roundsRoot = join(directory, "rounds");

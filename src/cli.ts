@@ -212,7 +212,17 @@ async function prepareContinuation(
     }),
     { type: "base-submission-started" }
   );
-  await store.save(submitting);
+  try {
+    await store.save(submitting);
+  } catch (error) {
+    const persisted = await store.get(roundId).catch(() => {
+      throw new Error("Continuation persistence is ambiguous; the copied Base Image was retained.");
+    });
+    if (!persisted) {
+      await artifacts.discardUnpersistedBase(roundId, baseImagePath);
+    }
+    throw error;
+  }
   return {
     action: "post-base-image",
     operationId: createOperationId(

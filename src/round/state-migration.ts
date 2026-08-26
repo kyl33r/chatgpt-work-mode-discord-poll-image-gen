@@ -87,6 +87,13 @@ export async function migrateIsolatedRoundCapsulesV4ToV5(
       throw unsupportedIsolatedState();
     }
     if (isRecord(parsed) && parsed.schemaVersion === ROUND_SCHEMA_VERSION) {
+      try {
+        if (!(await new JsonRoundStateStore(roundsRoot).get(entry.name))) {
+          throw new Error("missing current round");
+        }
+      } catch {
+        throw unsupportedIsolatedState();
+      }
       continue;
     }
     if (
@@ -107,7 +114,23 @@ export async function migrateIsolatedRoundCapsulesV4ToV5(
       await rm(validationRoot, { recursive: true, force: true });
     }
     const migrations = join(capsule, ROUND_MIGRATIONS_DIRECTORY_NAME);
-    await mkdir(migrations, { recursive: true, mode: 0o700 });
+    try {
+      await mkdir(migrations, { mode: 0o700 });
+    } catch (error) {
+      if (!isAlreadyExistsError(error)) {
+        throw error;
+      }
+    }
+    const migrationsMetadata = await lstat(migrations).catch(() => {
+      throw unsupportedIsolatedState();
+    });
+    if (
+      !migrationsMetadata.isDirectory() ||
+      migrationsMetadata.isSymbolicLink() ||
+      relative(resolvedCapsule, await realpath(migrations)) !== ROUND_MIGRATIONS_DIRECTORY_NAME
+    ) {
+      throw unsupportedIsolatedState();
+    }
     const backupPath = join(migrations, LEGACY_V4_ROUND_BACKUP_FILE);
     const backup = await open(backupPath, "wx", 0o600).catch(() => {
       throw unsupportedIsolatedState();
@@ -429,7 +452,9 @@ function unsupportedSharedState(): Error {
 }
 
 function unsupportedIsolatedState(): Error {
-  return new Error("Isolated round state is not the supported schema-four capsule.");
+  return new Error(
+    "Isolated round state is not a supported schema-four or schema-five capsule."
+  );
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -446,6 +471,10 @@ async function pathExists(path: string): Promise<boolean> {
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === "EEXIST";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

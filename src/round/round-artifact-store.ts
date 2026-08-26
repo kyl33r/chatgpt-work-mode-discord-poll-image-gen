@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, mkdir, realpath, rm, stat } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readdir, realpath, rm, rmdir, unlink } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { ROUND_BASE_IMAGE_BASENAME, SUPPORTED_IMAGE_EXTENSIONS } from "../constants.js";
@@ -14,6 +14,7 @@ export interface RoundArtifactStore {
     targetRoundId: string,
     sourcePath: string
   ): Promise<string>;
+  discardUnpersistedBase(roundId: string, storedPath: string): Promise<void>;
 }
 
 export class JsonRoundArtifactStore implements RoundArtifactStore {
@@ -82,6 +83,21 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     }
   }
 
+  public async discardUnpersistedBase(roundId: string, storedPath: string): Promise<void> {
+    const resolvedBase = await this.requireCapsuleImage(
+      roundId,
+      storedPath,
+      "Unpersisted continuation Base Image is ambiguous."
+    );
+    const capsule = roundCapsuleDirectory(this.roundsRoot, roundId);
+    const [entries, resolvedCapsule] = await Promise.all([readdir(capsule), realpath(capsule)]);
+    if (entries.length !== 1 || join(resolvedCapsule, entries[0] as string) !== resolvedBase) {
+      throw new Error("Unpersisted continuation capsule is not empty except for its Base Image.");
+    }
+    await unlink(resolvedBase);
+    await rmdir(capsule);
+  }
+
   private async requireCapsuleImage(
     roundId: string,
     candidatePath: string,
@@ -94,6 +110,14 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     const expectedCapsule = resolve(roundCapsuleDirectory(this.roundsRoot, roundId));
     const expectedCapsuleFromRoot = relative(resolve(this.roundsRoot), expectedCapsule);
     try {
+      const candidateMetadata = await lstat(resolve(candidatePath));
+      if (
+        !candidateMetadata.isFile() ||
+        candidateMetadata.isSymbolicLink() ||
+        candidateMetadata.nlink !== 1
+      ) {
+        throw new Error(errorMessage);
+      }
       [resolvedPath, resolvedCapsule, resolvedRoot] = await Promise.all([
         realpath(resolve(candidatePath)),
         realpath(expectedCapsule),
@@ -111,7 +135,6 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
       pathFromCapsule === ".." ||
       pathFromCapsule.startsWith(`..${sep}`) ||
       isAbsolute(pathFromCapsule) ||
-      !(await stat(resolvedPath)).isFile() ||
       !SUPPORTED_IMAGE_EXTENSIONS.some((candidate) => candidate === extension)
     ) {
       throw new Error(errorMessage);
