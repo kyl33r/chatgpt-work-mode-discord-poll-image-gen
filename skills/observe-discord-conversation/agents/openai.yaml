@@ -1,0 +1,4 @@
+interface:
+  display_name: "Observe Discord Conversation"
+  short_description: "Read one bounded Discord conversation safely"
+  default_prompt: "Use $observe-discord-conversation to read the first messages after this boundary in the allowlisted Discord channel."

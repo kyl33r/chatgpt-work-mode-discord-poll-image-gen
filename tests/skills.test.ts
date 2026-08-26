@@ -18,6 +18,7 @@ describe("project skills", () => {
     ["submit-base-image", "$submit-base-image"],
     ["get-discord-polls", "$get-discord-polls"],
     ["image-gen", "$image-gen"],
+    ["observe-discord-conversation", "$observe-discord-conversation"],
     ["round-start", "$round-start"],
     [
       "configure-discord-channel",
@@ -31,6 +32,10 @@ describe("project skills", () => {
     ["submit-base-image", "Post this base image to Discord for participant feedback."],
     ["get-discord-polls", "Scan the Discord text poll for its first five messages."],
     ["image-gen", "Generate an image edit from the winning poll feedback."],
+    [
+      "observe-discord-conversation",
+      "Read the first messages after this boundary in the allowlisted Discord channel."
+    ],
     ["round-start", "Start the Discord image feedback round workflow."]
   ])("matches the %s skill for explicit and implicit prompt %s", (skillName, prompt) => {
     expect(matchesSkillPrompt(skillName, prompt)).toBe(true);

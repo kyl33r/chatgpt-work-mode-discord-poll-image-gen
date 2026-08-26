@@ -8,6 +8,7 @@ const EXPECTED_SKILLS = [
   "discord-image-paste",
   "get-discord-polls",
   "image-gen",
+  "observe-discord-conversation",
   "round-start",
   "submit-base-image"
 ] as const;
@@ -18,6 +19,7 @@ const DISCOVERY_CUES: Record<(typeof EXPECTED_SKILLS)[number], readonly string[]
   "discord-image-paste": ["paste", "discord", "image", "clipboard"],
   "get-discord-polls": ["messages", "poll", "boundary"],
   "image-gen": ["edit", "base image", "feedback"],
+  "observe-discord-conversation": ["observe", "discord", "conversation", "allowlist"],
   "round-start": ["start", "resume", "discord"],
   "submit-base-image": ["submit", "base image", "feedback"]
 };
@@ -40,6 +42,11 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
   "discord-image-paste": [["paste", "attach", "upload"], ["discord"], ["image", "clipboard"]],
   "get-discord-polls": [["collect", "scan", "close"], ["message", "poll", "feedback"]],
   "image-gen": [["edit", "generate", "publish"], ["image"], ["feedback", "poll"]],
+  "observe-discord-conversation": [
+    ["read", "observe", "scan"],
+    ["message", "conversation"],
+    ["boundary", "allowlisted", "discord"]
+  ],
   "round-start": [["start", "resume", "run"], ["round", "workflow"], ["discord"]],
   "submit-base-image": [["submit", "post", "start"], ["image"], ["feedback", "discord"]]
 };
@@ -80,6 +87,7 @@ const REQUIRED_COMMANDS: Record<(typeof EXPECTED_SKILLS)[number], readonly strin
     "confirm-publication",
     "mark-attention"
   ],
+  "observe-discord-conversation": ["parse-conversation"],
   "submit-base-image": [
     "prepare-base-submission",
     "confirm-base-submission",
@@ -97,6 +105,24 @@ const FORBIDDEN_SKILL_TERMS: Partial<
     "native Discord poll"
   ]
 };
+
+const OBSERVE_DISCORD_CONVERSATION_CONTRACTS = [
+  "Private allowlist resolution is complete before browser navigation.",
+  "existing signed-in, agent-controlled Discord browser session",
+  "exact optional boundary",
+  "contiguous visible segment",
+  "displayed provider order",
+  "first configured qualifying-message count",
+  "opaque selections",
+  "Never download, paste, copy to the clipboard, acquire",
+  "Discord REST, Gateway, CDN, webhook, bot, or user-token interfaces",
+  "virtualization gap",
+  "edited or deleted",
+  "identity is missing or unstable",
+  "destination does not match",
+  "Never automatically retry an uncertain observation.",
+  "Do not reproduce its destination, boundary, message limit, or any CLI handoff/output"
+] as const;
 
 export function matchesSkillPrompt(skillName: string, prompt: string): boolean {
   if (!EXPECTED_SKILLS.includes(skillName as (typeof EXPECTED_SKILLS)[number])) {
@@ -270,6 +296,13 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
         }
       }
     }
+    if (skillName === "observe-discord-conversation") {
+      for (const contract of OBSERVE_DISCORD_CONVERSATION_CONTRACTS) {
+        if (!skillMarkdown.includes(contract)) {
+          issues.push(`observe-discord-conversation: required contract ${contract} is missing.`);
+        }
+      }
+    }
     if (
       skillName === "round-start" &&
       !skillMarkdown.includes("Keep the ChatGPT task active")
@@ -304,6 +337,13 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
       issues.push(`${skillName}: .agents discovery entry must be a symlink.`);
     } else if ((await realpath(agentLink)) !== (await realpath(skillRoot))) {
       issues.push(`${skillName}: .agents discovery link does not resolve to the canonical skill.`);
+    }
+  }
+
+  for (const integratedSkill of ["get-discord-polls", "round-start"] as const) {
+    const skillMarkdown = await readFile(resolve(skillsRoot, integratedSkill, "SKILL.md"), "utf8");
+    if (skillMarkdown.includes("skills/observe-discord-conversation/SKILL.md")) {
+      issues.push(`${integratedSkill}: must not integrate the conversation observation skill.`);
     }
   }
 
