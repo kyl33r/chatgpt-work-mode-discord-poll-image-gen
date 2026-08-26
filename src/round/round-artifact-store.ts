@@ -1,13 +1,19 @@
-import { realpath, stat } from "node:fs/promises";
-import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { constants as fsConstants } from "node:fs";
+import { chmod, copyFile, mkdir, realpath, rm, stat } from "node:fs/promises";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { SUPPORTED_IMAGE_EXTENSIONS } from "../constants.js";
+import { ROUND_BASE_IMAGE_BASENAME, SUPPORTED_IMAGE_EXTENSIONS } from "../constants.js";
 import { assertSafeRoundId, roundCapsuleDirectory } from "./round-paths.js";
 
 export interface RoundArtifactStore {
   acceptBaseImage(roundId: string, candidatePath: string): Promise<string>;
   acceptResultImage(roundId: string, candidatePath: string): Promise<string>;
   requireResultImage(roundId: string, storedPath: string): Promise<string>;
+  copyResultAsBase(
+    sourceRoundId: string,
+    targetRoundId: string,
+    sourcePath: string
+  ): Promise<string>;
 }
 
 export class JsonRoundArtifactStore implements RoundArtifactStore {
@@ -35,6 +41,45 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
       storedPath,
       "Recorded result image is missing or unsupported."
     );
+  }
+
+  public async copyResultAsBase(
+    sourceRoundId: string,
+    targetRoundId: string,
+    sourcePath: string
+  ): Promise<string> {
+    assertSafeRoundId(sourceRoundId);
+    assertSafeRoundId(targetRoundId);
+    if (sourceRoundId === targetRoundId) {
+      throw new Error("Continuation source and target rounds must differ.");
+    }
+    const resolvedSource = await this.requireResultImage(sourceRoundId, sourcePath);
+    await mkdir(resolve(this.roundsRoot), { recursive: true, mode: 0o700 });
+    const targetCapsule = roundCapsuleDirectory(this.roundsRoot, targetRoundId);
+    let createdTarget = false;
+    try {
+      await mkdir(targetCapsule, { mode: 0o700 });
+      createdTarget = true;
+      const [resolvedRoot, resolvedTarget] = await Promise.all([
+        realpath(resolve(this.roundsRoot)),
+        realpath(targetCapsule)
+      ]);
+      if (relative(resolvedRoot, resolvedTarget) !== targetRoundId) {
+        throw new Error("Continuation target capsule is not isolated.");
+      }
+      const destination = join(
+        targetCapsule,
+        `${ROUND_BASE_IMAGE_BASENAME}${extname(resolvedSource).toLowerCase()}`
+      );
+      await copyFile(resolvedSource, destination, fsConstants.COPYFILE_EXCL);
+      await chmod(destination, 0o600);
+      return destination;
+    } catch (error) {
+      if (createdTarget) {
+        await rm(targetCapsule, { recursive: true, force: true });
+      }
+      throw error;
+    }
   }
 
   private async requireCapsuleImage(

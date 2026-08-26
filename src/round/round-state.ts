@@ -27,6 +27,7 @@ export interface RoundState {
   baseImagePath: string;
   channelUrl: string;
   messageLimit: number;
+  parentRoundId?: string;
   baseMessageUrl?: string;
   collectionStartedAt?: string;
   capturedMessages: CapturedMessage[];
@@ -62,6 +63,7 @@ export interface CreateRoundInput {
   baseImagePath: string;
   channelUrl: string;
   messageLimit: number;
+  parentRoundId?: string;
 }
 
 export function createRound(input: CreateRoundInput): RoundState {
@@ -72,6 +74,7 @@ export function createRound(input: CreateRoundInput): RoundState {
     baseImagePath: input.baseImagePath,
     channelUrl: input.channelUrl,
     messageLimit: input.messageLimit,
+    ...(input.parentRoundId === undefined ? {} : { parentRoundId: input.parentRoundId }),
     capturedMessages: []
   };
 }
