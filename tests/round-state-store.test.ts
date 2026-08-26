@@ -231,6 +231,17 @@ describe("JsonRoundStateStore", () => {
     } })).rejects.toThrow("Unsupported or malformed Round State Capsule.");
     await expect(store.save({ ...valid, feedbackCaptureBatch: {
       ...feedbackCaptureBatch,
+      messages: [{ ...feedbackCaptureBatch.messages[1]!, messageOrdinal: 2 }]
+    } })).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+    await expect(store.save({ ...valid, feedbackCaptureBatch: {
+      ...feedbackCaptureBatch,
+      messages: [
+        feedbackCaptureBatch.messages[0]!,
+        { ...feedbackCaptureBatch.messages[1]!, messageOrdinal: 3 }
+      ]
+    } })).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+    await expect(store.save({ ...valid, feedbackCaptureBatch: {
+      ...feedbackCaptureBatch,
       messages: [{ ...feedbackCaptureBatch.messages[0]!, selectedAttachments: [
         { attachmentIndex: 0, mediaType: "image/png", status: "selected", imagePath: "/not-allowed" }
       ] }]

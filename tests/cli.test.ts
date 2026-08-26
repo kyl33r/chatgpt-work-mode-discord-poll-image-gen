@@ -452,6 +452,11 @@ describe("executeCommand", () => {
         }]
       }
     });
+    await expect(runCommand(
+      "plan-feedback-captures",
+      { roundId: "RPLAN", boundaryMessageUrl: "base-message", messages: [] },
+      store
+    )).rejects.toThrow("Feedback capture selection changed after planning.");
 
     await expect(runCommand(
       "plan-feedback-captures",

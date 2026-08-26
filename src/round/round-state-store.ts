@@ -220,7 +220,7 @@ function isFeedbackCaptureBatch(
   const capturedUrls = new Set(
     capturedMessages.map((message) => (message as { messageUrl: string }).messageUrl)
   );
-  let previousOrdinal = 0;
+  let previousOrdinal = capturedMessages.length;
   let selectedCount = capturedMessages.reduce<number>(
     (total, message) => total + (message as { contextImages: unknown[] }).contextImages.length,
     0
@@ -234,8 +234,7 @@ function isFeedbackCaptureBatch(
       message.messageUrl.length === 0 ||
       messageUrls.has(message.messageUrl) ||
       !Number.isInteger(message.messageOrdinal) ||
-      (message.messageOrdinal as number) <= previousOrdinal ||
-      (message.messageOrdinal as number) <= capturedMessages.length ||
+      (message.messageOrdinal as number) !== previousOrdinal + 1 ||
       (message.messageOrdinal as number) > (messageLimit as number) ||
       capturedUrls.has(message.messageUrl) ||
       !Array.isArray(message.selectedAttachments) ||

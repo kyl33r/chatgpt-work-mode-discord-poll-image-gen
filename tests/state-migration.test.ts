@@ -334,6 +334,30 @@ describe("migrateIsolatedRoundCapsulesToV7", () => {
       schemaVersion: 7
     });
   });
+
+  it("rejects a v6 round containing a capture batch from a newer schema", async () => {
+    const root = await mkdtemp(join(tmpdir(), "feedback-round-v7-migration-"));
+    temporaryDirectories.push(root);
+    const roundsRoot = join(root, "rounds");
+    const capsule = join(roundsRoot, "R006");
+    await mkdir(capsule, { recursive: true });
+    await writeFile(join(capsule, "round.json"), `${JSON.stringify({
+      schemaVersion: 6,
+      id: "R006",
+      phase: "collecting-messages",
+      baseImagePath: join(capsule, "base-image.png"),
+      channelUrl: "https://discord.test/channels/one",
+      messageLimit: 5,
+      baseMessageUrl: "base-message",
+      collectionStartedAt: "2026-08-24T10:00:00.000Z",
+      capturedMessages: [],
+      feedbackCaptureBatch: { unexpected: true }
+    })}\n`);
+
+    await expect(migrateIsolatedRoundCapsulesToV7(roundsRoot)).rejects.toThrow(
+      "Isolated round state is not a supported schema-four, schema-five, schema-six, or schema-seven capsule."
+    );
+  });
 });
 
 async function createMigrationFixture(overrides: Record<string, unknown> = {}) {

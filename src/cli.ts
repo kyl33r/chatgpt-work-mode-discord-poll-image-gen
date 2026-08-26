@@ -403,9 +403,6 @@ async function planRoundFeedbackCaptures(payload: unknown, store: RoundStateStor
     existing: round.capturedMessages,
     observed: input.messages
   });
-  if (planned.length === 0) {
-    return { action: "wait", selectedCount: 0 };
-  }
   const feedbackCaptureBatch = {
     boundaryMessageUrl: round.baseMessageUrl,
     messages: planned.reduce<Array<{
@@ -440,6 +437,9 @@ async function planRoundFeedbackCaptures(payload: unknown, store: RoundStateStor
   };
   if (round.feedbackCaptureBatch && JSON.stringify(round.feedbackCaptureBatch) !== JSON.stringify(feedbackCaptureBatch)) {
     throw new MessageCollectionAmbiguityError("Feedback capture selection changed after planning.");
+  }
+  if (planned.length === 0) {
+    return { action: "wait", selectedCount: 0 };
   }
   if (!round.feedbackCaptureBatch) {
     await store.save(applyRoundEvent(round, { type: "feedback-captures-planned", feedbackCaptureBatch }));

@@ -107,9 +107,16 @@ export async function migrateIsolatedRoundCapsulesToV7(
     ) {
       throw unsupportedIsolatedState();
     }
+    if (
+      parsed.schemaVersion === 6 &&
+      Object.keys(parsed).some((key) => !V6_ROUND_KEYS.has(key))
+    ) {
+      throw unsupportedIsolatedState();
+    }
     const legacyVersion = parsed.schemaVersion;
+    const { feedbackCaptureBatch: _discardedCaptureBatch, ...legacyWithoutCaptureBatch } = parsed;
     const migrated = {
-      ...parsed,
+      ...legacyWithoutCaptureBatch,
       schemaVersion: ROUND_SCHEMA_VERSION,
       capturedMessages: parsed.capturedMessages.map((message) => {
         if (!isRecord(message)) {
@@ -178,6 +185,24 @@ export async function migrateIsolatedRoundCapsulesToV7(
   }
   return { migratedRoundCount };
 }
+
+const V6_ROUND_KEYS = new Set([
+  "schemaVersion",
+  "id",
+  "phase",
+  "baseImagePath",
+  "channelUrl",
+  "messageLimit",
+  "parentRoundId",
+  "baseMessageUrl",
+  "collectionStartedAt",
+  "capturedMessages",
+  "synthesizedPrompt",
+  "closedMessageUrl",
+  "generationOutcome",
+  "outcomeMessageUrl",
+  "attentionReason"
+]);
 
 async function ensureIsolatedMigrationBackup(
   backupPath: string,
