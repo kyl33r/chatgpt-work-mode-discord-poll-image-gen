@@ -414,8 +414,8 @@ describe("executeCommand", () => {
     await mkdir(feedbackRoot, { recursive: true });
     const first = join(feedbackRoot, "message-1-attachment-0.png");
     const second = join(feedbackRoot, "message-2-attachment-0.png");
-    await writeFile(first, validPng());
-    await writeFile(second, validPng());
+    await writeFile(first, await validPng());
+    await writeFile(second, await validPng());
     const artifacts = new JsonRoundArtifactStore(roundsRoot);
     const messages = [1, 2, 3, 4, 5].map(observation);
     messages[0]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png", imagePath: first }];

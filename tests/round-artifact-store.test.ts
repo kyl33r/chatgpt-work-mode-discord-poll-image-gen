@@ -178,7 +178,7 @@ describe("JsonRoundArtifactStore", () => {
     const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
     await mkdir(feedbackRoot, { recursive: true });
     const imagePath = join(feedbackRoot, "message-1-attachment-0.png");
-    await writeFile(imagePath, validPng());
+    await writeFile(imagePath, await validPng());
 
     const accepted = await new JsonRoundArtifactStore(roundsRoot).acceptFeedbackImage(
       "R001",
@@ -237,6 +237,24 @@ describe("JsonRoundArtifactStore", () => {
         "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule."
       );
     }
+  });
+
+  it("rejects a complete-looking PNG whose encoded payload is corrupt", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const imagePath = join(feedbackRoot, "message-1-attachment-0.png");
+    const corrupt = Buffer.from(await validPng());
+    const imageDataMarker = corrupt.indexOf(Buffer.from("IDAT", "ascii"));
+    corrupt[imageDataMarker + 4] = (corrupt[imageDataMarker + 4] ?? 0) ^ 0xff;
+    await writeFile(imagePath, corrupt);
+
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).acceptFeedbackImage("R001", 1, 0, imagePath)
+    ).rejects.toThrow(
+      "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule."
+    );
   });
 });
 

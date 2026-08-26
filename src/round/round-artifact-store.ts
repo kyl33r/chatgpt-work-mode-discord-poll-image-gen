@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, readFile, readdir, realpath, rm, rmdir, unlink } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, readdir, realpath, rm, rmdir, unlink } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import sharp from "sharp";
 
@@ -229,8 +229,7 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     ) {
       throw new Error(errorMessage);
     }
-    const bytes = await readFile(resolvedPath);
-    if (!hasMatchingImageSignature(bytes, extname(resolvedPath).toLowerCase())) {
+    if (!(await isDecodableImageOfExpectedFormat(resolvedPath))) {
       throw new Error(errorMessage);
     }
     return resolvedPath;
@@ -251,84 +250,4 @@ async function isDecodableImageOfExpectedFormat(path: string): Promise<boolean> 
   } catch {
     return false;
   }
-}
-
-function hasMatchingImageSignature(bytes: Buffer, extension: string): boolean {
-  if (extension === ".png") {
-    return isStructurallyCompletePng(bytes);
-  }
-  if (extension === ".jpg" || extension === ".jpeg") {
-    return isStructurallyCompleteJpeg(bytes);
-  }
-  return extension === ".webp" && isStructurallyCompleteWebp(bytes);
-}
-
-function isStructurallyCompletePng(bytes: Buffer): boolean {
-  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  if (bytes.length < 45 || !bytes.subarray(0, 8).equals(signature)) {
-    return false;
-  }
-  let offset = 8;
-  let sawHeader = false;
-  let sawImageData = false;
-  while (offset + 12 <= bytes.length) {
-    const dataLength = bytes.readUInt32BE(offset);
-    const chunkEnd = offset + 12 + dataLength;
-    if (chunkEnd > bytes.length) {
-      return false;
-    }
-    const type = bytes.subarray(offset + 4, offset + 8).toString("ascii");
-    if (!sawHeader) {
-      if (type !== "IHDR" || dataLength !== 13) {
-        return false;
-      }
-      sawHeader = bytes.readUInt32BE(offset + 8) > 0 && bytes.readUInt32BE(offset + 12) > 0;
-    } else if (type === "IDAT") {
-      sawImageData = true;
-    } else if (type === "IEND") {
-      return dataLength === 0 && sawHeader && sawImageData && chunkEnd === bytes.length;
-    }
-    offset = chunkEnd;
-  }
-  return false;
-}
-
-function isStructurallyCompleteJpeg(bytes: Buffer): boolean {
-  if (
-    bytes.length < 8 ||
-    bytes[0] !== 0xff ||
-    bytes[1] !== 0xd8 ||
-    bytes.at(-2) !== 0xff ||
-    bytes.at(-1) !== 0xd9
-  ) {
-    return false;
-  }
-  let sawFrame = false;
-  let sawScan = false;
-  for (let index = 2; index < bytes.length - 1; index += 1) {
-    if (bytes[index] !== 0xff) {
-      continue;
-    }
-    const marker = bytes[index + 1];
-    sawFrame ||= marker !== undefined && marker >= 0xc0 && marker <= 0xc3;
-    sawScan ||= marker === 0xda;
-  }
-  return sawFrame && sawScan;
-}
-
-function isStructurallyCompleteWebp(bytes: Buffer): boolean {
-  if (
-    bytes.length < 20 ||
-    bytes.subarray(0, 4).toString("ascii") !== "RIFF" ||
-    bytes.readUInt32LE(4) + 8 !== bytes.length ||
-    bytes.subarray(8, 12).toString("ascii") !== "WEBP"
-  ) {
-    return false;
-  }
-  const chunkType = bytes.subarray(12, 16).toString("ascii");
-  const chunkLength = bytes.readUInt32LE(16);
-  return (
-    (chunkType === "VP8 " || chunkType === "VP8L" || chunkType === "VP8X") &&
-    20 + chunkLength + (chunkLength % 2) === bytes.length
-  );
 }
