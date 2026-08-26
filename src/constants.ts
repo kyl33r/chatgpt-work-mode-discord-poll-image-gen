@@ -11,6 +11,11 @@ export const SYNTHESIZED_PROMPT_MAX_CHARACTERS = 1_200;
 export const SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"] as const;
 export const SUPPORTED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 export const STATE_ROOT = ".state";
+export const RUNTIME_ROOT = ".runtime";
+export const CONVERSATION_HANDOFF_ROOT = join(RUNTIME_ROOT, "conversation-handoffs");
+export const CONVERSATION_HANDOFF_SCHEMA_VERSION = 1;
+export const CONVERSATION_HANDOFF_REQUEST_SUFFIX = ".request.json";
+export const CONVERSATION_HANDOFF_SNAPSHOT_SUFFIX = ".snapshot.json";
 export const DISCORD_CHANNEL_ALLOWLIST_SCHEMA_VERSION = 1;
 export const DISCORD_CHANNEL_ALLOWLIST_PATH = join(
   STATE_ROOT,
