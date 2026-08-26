@@ -46,16 +46,18 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     );
   }
 
-  public acceptResultImage(roundId: string, candidatePath: string): Promise<string> {
-    return this.requireCapsuleImage(
+  public async acceptResultImage(roundId: string, candidatePath: string): Promise<string> {
+    const accepted = await this.requireValidResultImage(
       roundId,
       candidatePath,
       "Result image must be staged under the durable state directory."
     );
+    await chmod(accepted, 0o600);
+    return accepted;
   }
 
   public requireResultImage(roundId: string, storedPath: string): Promise<string> {
-    return this.requireCapsuleImage(
+    return this.requireValidResultImage(
       roundId,
       storedPath,
       "Recorded result image is missing or unsupported."
@@ -207,6 +209,18 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     ) {
       throw new Error(errorMessage);
     }
+    if (!(await isDecodableImageOfExpectedFormat(resolvedPath))) {
+      throw new Error(errorMessage);
+    }
+    return resolvedPath;
+  }
+
+  private async requireValidResultImage(
+    roundId: string,
+    candidatePath: string,
+    errorMessage: string
+  ): Promise<string> {
+    const resolvedPath = await this.requireCapsuleImage(roundId, candidatePath, errorMessage);
     if (!(await isDecodableImageOfExpectedFormat(resolvedPath))) {
       throw new Error(errorMessage);
     }

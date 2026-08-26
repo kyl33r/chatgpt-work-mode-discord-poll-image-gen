@@ -21,7 +21,7 @@ describe("JsonRoundArtifactStore", () => {
     const targetCapsule = join(roundsRoot, "R002");
     await mkdir(sourceCapsule, { recursive: true });
     const source = join(sourceCapsule, "result-image.png");
-    await writeFile(source, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+    await writeFile(source, await validPng());
 
     const copied = await new JsonRoundArtifactStore(roundsRoot).copyResultAsBase(
       "R001",
@@ -52,13 +52,30 @@ describe("JsonRoundArtifactStore", () => {
     ).rejects.toThrow("Recorded result image is missing or unsupported.");
   });
 
+  it("rejects a corrupt Result Image before it can seed a continuation round", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const sourceCapsule = join(roundsRoot, "R001");
+    await mkdir(sourceCapsule, { recursive: true });
+    const corruptSource = join(sourceCapsule, "result-image.png");
+    await writeFile(corruptSource, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).copyResultAsBase(
+        "R001",
+        "R002",
+        corruptSource
+      )
+    ).rejects.toThrow("Recorded result image is missing or unsupported.");
+  });
+
   it("never reuses a source capsule or overwrites an existing target capsule", async () => {
     const directory = await temporaryDirectory();
     const roundsRoot = join(directory, "rounds");
     const sourceCapsule = join(roundsRoot, "R001");
     await mkdir(sourceCapsule, { recursive: true });
     const source = join(sourceCapsule, "result-image.png");
-    await writeFile(source, "source", "utf8");
+    await writeFile(source, await validPng());
     const artifacts = new JsonRoundArtifactStore(roundsRoot);
 
     await expect(artifacts.copyResultAsBase("R001", "R001", source)).rejects.toThrow(
@@ -78,7 +95,7 @@ describe("JsonRoundArtifactStore", () => {
     await mkdir(sourceCapsule, { recursive: true });
     await mkdir(aliasedCapsule);
     const source = join(sourceCapsule, "result-image.png");
-    await writeFile(source, "source", "utf8");
+    await writeFile(source, await validPng());
     await symlink(aliasedCapsule, join(roundsRoot, "R002"));
 
     await expect(
