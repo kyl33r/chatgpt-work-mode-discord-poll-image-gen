@@ -188,25 +188,6 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     return resolvedPath;
   }
 
-  private async requireValidResultImage(
-    roundId: string,
-    candidatePath: string,
-    errorMessage: string
-  ): Promise<string> {
-    const resolvedPath = await this.requireCapsuleImage(roundId, candidatePath, errorMessage);
-    const resolvedCapsule = await realpath(roundCapsuleDirectory(this.roundsRoot, roundId));
-    const pathFromCapsule = relative(resolvedCapsule, resolvedPath);
-    const expectedName = `${ROUND_RESULT_IMAGE_BASENAME}${extname(resolvedPath).toLowerCase()}`;
-    if (
-      dirname(pathFromCapsule) !== "." ||
-      basename(pathFromCapsule) !== expectedName ||
-      !(await isDecodableImageOfExpectedFormat(resolvedPath))
-    ) {
-      throw new Error(errorMessage);
-    }
-    return resolvedPath;
-  }
-
   private async requireValidFeedbackImage(
     roundId: string,
     messageOrdinal: number,
@@ -230,6 +211,25 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
       throw new Error(errorMessage);
     }
     if (!(await isDecodableImageOfExpectedFormat(resolvedPath))) {
+      throw new Error(errorMessage);
+    }
+    return resolvedPath;
+  }
+
+  private async requireValidResultImage(
+    roundId: string,
+    candidatePath: string,
+    errorMessage: string
+  ): Promise<string> {
+    const resolvedPath = await this.requireCapsuleImage(roundId, candidatePath, errorMessage);
+    const resolvedCapsule = await realpath(roundCapsuleDirectory(this.roundsRoot, roundId));
+    const pathFromCapsule = relative(resolvedCapsule, resolvedPath);
+    const expectedName = `${ROUND_RESULT_IMAGE_BASENAME}${extname(resolvedPath).toLowerCase()}`;
+    if (
+      dirname(pathFromCapsule) !== "." ||
+      basename(pathFromCapsule) !== expectedName ||
+      !(await isDecodableImageOfExpectedFormat(resolvedPath))
+    ) {
       throw new Error(errorMessage);
     }
     return resolvedPath;
