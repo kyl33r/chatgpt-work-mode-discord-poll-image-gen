@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -170,6 +170,42 @@ describe("JsonRoundArtifactStore", () => {
         join(roundsRoot, "R001", "result-image.png")
       )
     ).rejects.toThrow("Result image must be staged under the durable state directory.");
+  });
+
+  it("accepts a signature-valid participant image only from feedback-images", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const imagePath = join(feedbackRoot, "message-1-attachment-0.png");
+    await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+    const accepted = await new JsonRoundArtifactStore(roundsRoot).acceptFeedbackImage(
+      "R001",
+      imagePath
+    );
+
+    expect(accepted).toBe(await realpath(imagePath));
+    expect((await stat(accepted)).mode & 0o777).toBe(0o600);
+  });
+
+  it("rejects participant images with mismatched bytes or the wrong capsule location", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const mismatched = join(feedbackRoot, "bad.png");
+    const wrongLocation = join(roundsRoot, "R001", "ordinary.png");
+    await writeFile(mismatched, Buffer.from([0xff, 0xd8, 0xff]));
+    await writeFile(wrongLocation, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+
+    await expect(artifacts.acceptFeedbackImage("R001", mismatched)).rejects.toThrow(
+      "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule."
+    );
+    await expect(artifacts.acceptFeedbackImage("R001", wrongLocation)).rejects.toThrow(
+      "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule."
+    );
   });
 });
 

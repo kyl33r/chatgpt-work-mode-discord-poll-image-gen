@@ -52,7 +52,7 @@ The skill stages the selected image inside its gitignored `.state/rounds/<round-
 ## Run one supervised round
 
 1. Invoke `$round-start` with the ChatGPT attachment or exact Discord message link.
-2. Let any participants post ordinary non-empty text after the Base Image boundary. No prefix is required and repeated authors count.
+2. Let any participants post ordinary non-empty text after the Base Image boundary. No prefix is required and repeated authors count. A qualifying message may include PNG, JPEG, or WebP attachments; only the first two supported images per message and first five across the round are used, in visible order. Attachment-only messages do not count.
 3. Keep the supervised task active for bounded scans until the configured five-message limit is reached. Skills are not background listeners; ending the task pauses collection until the owner resumes it or separately approves a background service.
 4. Confirm the returned closed-marker post containing the sanitized final prompt; later messages no longer count.
 5. Let `$round-start` invoke `$imagegen` here exactly once using that persisted prompt.
@@ -60,7 +60,7 @@ The skill stages the selected image inside its gitignored `.state/rounds/<round-
 
 To improve the latest successful Result Image in another round, invoke `$continue-from-result`. It selects the most recently started completed success in this channel, copies that image into a new isolated round capsule, posts it as the new Base Image after confirmation, and then resumes `$round-start`. Arbitrary round IDs, cross-channel sources, and refused or failed results are not eligible.
 
-The skills request confirmation at live posting boundaries when required. If Discord login, destination, poll state, image generation, or upload confirmation is ambiguous, the round pauses as `needs-attention` and does not retry automatically.
+Selected attachments are downloaded only through the signed-in browser's visible media surface and staged under the owning round capsule. The skills request confirmation at live posting boundaries when required. If Discord login, destination, attachment acquisition, poll state, image generation, or upload confirmation is ambiguous, the round pauses as `needs-attention` and does not retry automatically.
 
 ## Local state and troubleshooting
 
