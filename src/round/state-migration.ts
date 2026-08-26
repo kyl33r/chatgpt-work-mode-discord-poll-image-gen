@@ -41,7 +41,7 @@ export async function migrateLegacyState(
   paths: StateMigrationPaths
 ): Promise<StateMigrationResult> {
   const stateRoot = dirname(resolve(paths.newStatePath));
-  if (await pathExists(paths.newStatePath) || await pathExists(stateRoot)) {
+  if (await pathExists(paths.newStatePath)) {
     throw new Error("Durable round state already exists; migration was not run.");
   }
 
@@ -56,6 +56,10 @@ export async function migrateLegacyState(
   const migrationRootRelativePath = requireContainedDestination(paths.migrationRoot, stateRoot);
   const resultImageName = `${legacyRound.id}${extname(legacyBaseImagePath).toLowerCase()}`;
   const newBaseImagePath = resolve(paths.newBaseImageRoot, resultImageName);
+  const newMigrationBackupPath = resolve(paths.migrationRoot, "rounds-v2.json");
+  if (await pathExists(newBaseImagePath) || await pathExists(newMigrationBackupPath)) {
+    throw new Error("A durable migration artifact already exists; migration was not run.");
+  }
   const temporaryRoot = join(
     dirname(stateRoot),
     `.${basename(stateRoot)}.migration-${process.pid}-${Date.now()}`
@@ -72,27 +76,40 @@ export async function migrateLegacyState(
     collectionStartedAt: legacyRound.collectionStartedAt,
     capturedMessages: legacyRound.capturedMessages
   };
+  const committedArtifacts: string[] = [];
   try {
     const stagedBaseRoot = join(temporaryRoot, baseRootRelativePath);
     const stagedMigrationRoot = join(temporaryRoot, migrationRootRelativePath);
+    const stagedBaseImagePath = join(stagedBaseRoot, resultImageName);
+    const stagedMigrationBackupPath = join(stagedMigrationRoot, "rounds-v2.json");
+    const stagedStatePath = join(temporaryRoot, stateRelativePath);
     await mkdir(stagedBaseRoot, { recursive: true });
     await mkdir(stagedMigrationRoot, { recursive: true });
     await copyFile(
       legacyBaseImagePath,
-      join(stagedBaseRoot, resultImageName),
+      stagedBaseImagePath,
       fsConstants.COPYFILE_EXCL
     );
     await copyFile(
       paths.legacyStatePath,
-      join(stagedMigrationRoot, "rounds-v2.json"),
+      stagedMigrationBackupPath,
       fsConstants.COPYFILE_EXCL
     );
-    await new JsonRoundStateStore(join(temporaryRoot, stateRelativePath)).save(migratedRound);
-    await rename(temporaryRoot, stateRoot);
+    await new JsonRoundStateStore(stagedStatePath).save(migratedRound);
+
+    await mkdir(paths.newBaseImageRoot, { recursive: true });
+    await mkdir(paths.migrationRoot, { recursive: true });
+    await rename(stagedBaseImagePath, newBaseImagePath);
+    committedArtifacts.push(newBaseImagePath);
+    await rename(stagedMigrationBackupPath, newMigrationBackupPath);
+    committedArtifacts.push(newMigrationBackupPath);
+    await rename(stagedStatePath, paths.newStatePath);
   } catch (error) {
+    await Promise.all(committedArtifacts.map((path) => rm(path, { force: true })));
     await rm(temporaryRoot, { recursive: true, force: true });
     throw error;
   }
+  await rm(temporaryRoot, { recursive: true, force: true });
   return { migrated: true, roundId: migratedRound.id, phase: "synthesizing-feedback" };
 }
 

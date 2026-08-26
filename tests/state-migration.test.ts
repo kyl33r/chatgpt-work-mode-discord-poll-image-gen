@@ -83,6 +83,16 @@ describe("migrateLegacyState", () => {
     expect(await readFile(paths.newStatePath, "utf8")).toBe("existing");
   });
 
+  it("preserves unrelated durable directories when rounds.json does not exist", async () => {
+    const paths = await createMigrationFixture();
+    const unrelatedDirectory = join(paths.newStatePath, "..", "results");
+    await mkdir(unrelatedDirectory, { recursive: true });
+
+    await expect(migrateLegacyState(paths)).resolves.toMatchObject({ migrated: true });
+    await expect(access(unrelatedDirectory)).resolves.toBeUndefined();
+    await expect(access(paths.newStatePath)).resolves.toBeUndefined();
+  });
+
   it("removes staged output when commit preparation fails", async () => {
     const paths = await createMigrationFixture();
     const stateRoot = join(paths.newStatePath, "..");

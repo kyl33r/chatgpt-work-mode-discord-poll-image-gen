@@ -30,16 +30,21 @@ export const SYNTHESIZED_PROMPT_PREAMBLE =
 export const SYNTHESIZED_PROMPT_PROHIBITED_PATTERNS = [
   /https?:\/\//i,
   /www\./i,
+  /\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s]*)?\b/i,
   /discord\.com\/channels\//i,
   /<[@#][^>]+>/,
+  /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
+  /(?:^|\s)@[A-Za-z0-9_.-]{2,32}\b/,
   /@(?:everyone|here)\b/i,
   /\b\d{15,20}\b/,
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i,
+  /\b(?=[A-Za-z0-9_-]{24,}\b)(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]+\b/,
   /\.(?:env|runtime|state)(?:[\\/]|\b)/i,
   /(?:\/Users\/|\/home\/|[A-Za-z]:\\)/,
   /=====/,
   /\[[^\]]+\]\([^)]+\)/,
   /\b(?:password|secret|token|api[-_ ]?key|cookie|credential)\b/i,
-  /(?:prepare|confirm|collect|stop|mark|plan)-(?:base|collection|generation|publication|messages|round|attention|next|prompt-synthesis|synthesized-prompt)/i,
-  /\b(?:ignore|override|bypass|disable|change|set|increase|decrease)\b.{0,50}\b(?:discord channel|channel destination|message limit|five-message limit|security|workflow|control flow)\b/i,
-  /\b(?:discord channel|channel destination|message limit|five-message limit|security|workflow|control flow)\b.{0,50}\b(?:ignore|override|bypass|disable|change|set|increase|decrease)\b/i
+  /(?:prepare|confirm|collect|stop|mark|plan|get)-(?:base|collection|generation|publication|messages|round|attention|next|prompt-synthesis|synthesized-prompt)/i,
+  /\b(?:ignore|override|bypass|disable|change|switch|set|increase|decrease|raise|lower|remove|alter)\b.{0,50}\b(?:channel|limit|security|workflow|control flow)\b/i,
+  /\b(?:channel|limit|security|workflow|control flow)\b.{0,50}\b(?:ignore|override|bypass|disable|change|switch|set|increase|decrease|raise|lower|remove|alter)\b/i
 ] as const;
