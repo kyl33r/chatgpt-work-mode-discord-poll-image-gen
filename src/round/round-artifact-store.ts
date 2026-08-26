@@ -1,8 +1,13 @@
 import { constants as fsConstants } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, readdir, realpath, rm, rmdir, unlink } from "node:fs/promises";
-import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import sharp from "sharp";
 
-import { ROUND_BASE_IMAGE_BASENAME, SUPPORTED_IMAGE_EXTENSIONS } from "../constants.js";
+import {
+  ROUND_BASE_IMAGE_BASENAME,
+  ROUND_RESULT_IMAGE_BASENAME,
+  SUPPORTED_IMAGE_EXTENSIONS
+} from "../constants.js";
 import { assertSafeRoundId, roundCapsuleDirectory } from "./round-paths.js";
 
 export interface RoundArtifactStore {
@@ -28,16 +33,18 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     );
   }
 
-  public acceptResultImage(roundId: string, candidatePath: string): Promise<string> {
-    return this.requireCapsuleImage(
+  public async acceptResultImage(roundId: string, candidatePath: string): Promise<string> {
+    const accepted = await this.requireValidResultImage(
       roundId,
       candidatePath,
       "Result image must be staged under the durable state directory."
     );
+    await chmod(accepted, 0o600);
+    return accepted;
   }
 
   public requireResultImage(roundId: string, storedPath: string): Promise<string> {
-    return this.requireCapsuleImage(
+    return this.requireValidResultImage(
       roundId,
       storedPath,
       "Recorded result image is missing or unsupported."
@@ -140,5 +147,40 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
       throw new Error(errorMessage);
     }
     return resolvedPath;
+  }
+
+  private async requireValidResultImage(
+    roundId: string,
+    candidatePath: string,
+    errorMessage: string
+  ): Promise<string> {
+    const resolvedPath = await this.requireCapsuleImage(roundId, candidatePath, errorMessage);
+    const resolvedCapsule = await realpath(roundCapsuleDirectory(this.roundsRoot, roundId));
+    const pathFromCapsule = relative(resolvedCapsule, resolvedPath);
+    const expectedName = `${ROUND_RESULT_IMAGE_BASENAME}${extname(resolvedPath).toLowerCase()}`;
+    if (
+      dirname(pathFromCapsule) !== "." ||
+      basename(pathFromCapsule) !== expectedName ||
+      !(await isDecodableImageOfExpectedFormat(resolvedPath))
+    ) {
+      throw new Error(errorMessage);
+    }
+    return resolvedPath;
+  }
+}
+
+async function isDecodableImageOfExpectedFormat(path: string): Promise<boolean> {
+  const extension = extname(path).toLowerCase();
+  const expectedFormat = extension === ".png" ? "png" : extension === ".webp" ? "webp" : "jpeg";
+  try {
+    const decoder = sharp(path, { failOn: "error" });
+    const metadata = await decoder.metadata();
+    if (metadata.format !== expectedFormat || !metadata.width || !metadata.height) {
+      return false;
+    }
+    await decoder.clone().raw().toBuffer();
+    return true;
+  } catch {
+    return false;
   }
 }

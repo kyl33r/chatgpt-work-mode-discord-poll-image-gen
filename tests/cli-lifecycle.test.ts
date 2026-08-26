@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import sharp from "sharp";
 
 import { executeCommand as executeRoundCommand } from "../src/cli.js";
 import {
@@ -124,7 +125,7 @@ describe("round CLI lifecycle", () => {
     });
 
     const resultImagePath = join(roundCapsule, "result-image.png");
-    await writeFile(resultImagePath, "test result fixture", "utf8");
+    await writeFile(resultImagePath, await validPng());
     const stagedResultImagePath = await realpath(resultImagePath);
     await runCommand(
       "confirm-generation",
@@ -174,4 +175,10 @@ function runCommand(
     workflowLock: new InMemoryWorkflowLock(),
     ...options
   });
+}
+
+function validPng(): Promise<Buffer> {
+  return sharp({
+    create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } }
+  }).png().toBuffer();
 }
