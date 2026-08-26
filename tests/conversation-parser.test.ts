@@ -202,6 +202,46 @@ describe("parseConversation", () => {
       privateInputValue
     );
   });
+
+  it.each([
+    ["the request is null", () => null],
+    [
+      "the observation batch is malformed",
+      () => ({ ...validParseRequest(), observation: { privatePayload: "private malformed observation" } })
+    ],
+    [
+      "a message entry is null",
+      () => {
+        const request = validParseRequest();
+        return { ...request, observation: { ...request.observation, messages: [null] } };
+      }
+    ],
+    [
+      "a message text field is malformed",
+      () => {
+        const request = validParseRequest();
+        return {
+          ...request,
+          observation: {
+            ...request.observation,
+            messages: [
+              {
+                ...message("ordinary-text", "Visible text", "discord-message:ordinary"),
+                text: { privatePayload: "private malformed text" }
+              }
+            ]
+          }
+        };
+      }
+    ]
+  ])("returns a controlled error when %s", (_description, createMalformedRequest) => {
+    const privateInputText = "private malformed";
+
+    expectControlledObservationError(
+      () => parseConversation(createMalformedRequest() as never),
+      privateInputText
+    );
+  });
 });
 
 function parseMessages(
@@ -244,6 +284,24 @@ function message(
     author: { id: authorId, name: "Participant" },
     timestamp,
     attachments: []
+  };
+}
+
+function validParseRequest() {
+  const boundary = messageIdentity("discord-message:boundary");
+  return {
+    destination,
+    boundary,
+    messageLimit: 3,
+    attachmentLimitPerMessage: 2,
+    attachmentLimitTotal: 5,
+    supportedAttachmentMediaTypes: ["image/png"],
+    observation: {
+      destination,
+      boundary,
+      coverage: { kind: "contiguous-after-boundary" as const },
+      messages: [message("ordinary-text", "Visible text", "discord-message:ordinary")]
+    }
   };
 }
 

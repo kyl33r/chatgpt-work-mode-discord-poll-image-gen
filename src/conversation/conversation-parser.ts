@@ -116,23 +116,27 @@ function isQualifying(observation: ConversationObservation): observation is Conv
   return observation.kind === "ordinary-text" && observation.text.trim().length > 0;
 }
 
-function validateRequest(request: ConversationParseRequest): void {
+function validateRequest(request: unknown): asserts request is ConversationParseRequest {
   if (
+    !isRecord(request) ||
+    typeof request.destination !== "string" ||
+    (request.boundary !== undefined && typeof request.boundary !== "string") ||
     !isPositiveInteger(request.messageLimit) ||
     !isNonNegativeInteger(request.attachmentLimitPerMessage) ||
     !isNonNegativeInteger(request.attachmentLimitTotal) ||
-    !isSupportedMediaPolicy(request.supportedAttachmentMediaTypes)
+    !isSupportedMediaPolicy(request.supportedAttachmentMediaTypes) ||
+    !isConversationObservationBatch(request.observation)
   ) {
     throw new ConversationObservationError();
   }
 }
 
-function isPositiveInteger(value: number): boolean {
-  return Number.isInteger(value) && value > 0;
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
-function isNonNegativeInteger(value: number): boolean {
-  return Number.isInteger(value) && value >= 0;
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function isSupportedMediaPolicy(value: unknown): value is readonly string[] {
@@ -141,4 +145,36 @@ function isSupportedMediaPolicy(value: unknown): value is readonly string[] {
     value.length > 0 &&
     value.every((mediaType) => typeof mediaType === "string" && mediaType.trim().length > 0)
   );
+}
+
+function isConversationObservationBatch(value: unknown): value is ConversationObservationBatch {
+  return (
+    isRecord(value) &&
+    typeof value.destination === "string" &&
+    (value.boundary === undefined || typeof value.boundary === "string") &&
+    isRecord(value.coverage) &&
+    value.coverage.kind === "contiguous-after-boundary" &&
+    Array.isArray(value.messages) &&
+    value.messages.every(isConversationObservation)
+  );
+}
+
+function isConversationObservation(value: unknown): value is ConversationObservation {
+  return (
+    isRecord(value) &&
+    typeof value.identity === "string" &&
+    (value.kind === "ordinary-text" || value.kind === "system" || value.kind === "attachment-only") &&
+    typeof value.text === "string" &&
+    isConversationAuthor(value.author) &&
+    typeof value.timestamp === "string" &&
+    Array.isArray(value.attachments)
+  );
+}
+
+function isConversationAuthor(value: unknown): value is ConversationAuthor {
+  return isRecord(value) && typeof value.id === "string" && typeof value.name === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
