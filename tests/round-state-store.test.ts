@@ -126,6 +126,77 @@ describe("JsonRoundStateStore", () => {
       "Unsupported or malformed Round State Capsule."
     );
   });
+
+  it("persists ordered context images and rejects invalid or excessive image state", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const store = new JsonRoundStateStore(roundsRoot);
+    const valid = {
+      ...round("RIMAGES"),
+      capturedMessages: [{
+        messageUrl: "message-1",
+        authorId: "alice",
+        authorName: "Alice",
+        timestamp: "2026-08-24T10:01:00.000Z",
+        text: "make it brighter",
+        contextImages: [
+          { attachmentIndex: 0, imagePath: "/state/RIMAGES/feedback-images/0.png" },
+          { attachmentIndex: 2, imagePath: "/state/RIMAGES/feedback-images/2.webp" }
+        ]
+      }]
+    };
+    const originalMessage = valid.capturedMessages[0]!;
+    await store.save(valid);
+    await expect(store.get("RIMAGES")).resolves.toEqual(valid);
+
+    await expect(
+      store.save({
+        ...valid,
+        capturedMessages: [{
+          ...originalMessage,
+          contextImages: [
+            { attachmentIndex: 0, imagePath: "/a.png" },
+            { attachmentIndex: 0, imagePath: "/b.png" }
+          ]
+        }]
+      })
+    ).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+    await expect(
+      store.save({
+        ...valid,
+        capturedMessages: Array.from({ length: 3 }, (_, messageIndex) => ({
+          ...originalMessage,
+          messageUrl: `message-${messageIndex}`,
+          contextImages: [0, 1].map((attachmentIndex) => ({
+            attachmentIndex,
+            imagePath: `/state/${messageIndex}-${attachmentIndex}.png`
+          }))
+        }))
+      })
+    ).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+
+    const secondMessage = {
+      ...originalMessage,
+      messageUrl: "message-2",
+      timestamp: "2026-08-24T10:02:00.000Z",
+      contextImages: [{
+        attachmentIndex: 0,
+        imagePath: originalMessage.contextImages[0]!.imagePath
+      }]
+    };
+    await expect(
+      store.save({ ...valid, capturedMessages: [originalMessage, secondMessage] })
+    ).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+    await expect(
+      store.save({
+        ...valid,
+        capturedMessages: [
+          { ...originalMessage, timestamp: "2026-08-24T10:02:00.000Z" },
+          { ...secondMessage, timestamp: "2026-08-24T10:01:00.000Z", contextImages: [] }
+        ]
+      })
+    ).rejects.toThrow("Unsupported or malformed Round State Capsule.");
+  });
 });
 
 function round(id: string): RoundState {

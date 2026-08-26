@@ -21,8 +21,12 @@ The marker-bounded collection of the first configured number of ordinary non-emp
 _Avoid_: Native poll, survey, ballot
 
 **Captured Message**:
-The exact first-observed visible text and stable identity of one eligible Discord message in the Text Poll. Captured Messages remain frozen in arrival order as the source for one Synthesized Prompt.
+The exact first-observed visible text, stable identity, and bounded ordered Participant Reference Images of one eligible Discord message in the Text Poll. Captured Messages remain frozen in arrival order as the source for one Synthesized Prompt.
 _Avoid_: Candidate, vote, selected feedback
+
+**Participant Reference Image**:
+An optional validated PNG, JPEG, or WebP attachment from a qualifying Captured Message. It supplies supporting visual context in message and attachment order; it never replaces the Base Image as the edit target.
+_Avoid_: New base image, winning image, republished attachment
 
 **Synthesized Prompt**:
 The single sanitized visual-edit instruction derived from every frozen Captured Message, posted with the closed marker, persisted once, and used unchanged for the image edit.
