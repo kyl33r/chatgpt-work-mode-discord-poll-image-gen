@@ -66,11 +66,19 @@ export interface QualifyingConversationMessage {
   readonly timestamp: string;
 }
 
+export interface AttachmentSelection {
+  readonly owner: StableMessageIdentity;
+  readonly index: number;
+  readonly mediaType: string;
+  readonly selection: OpaqueAttachmentSelection;
+}
+
 export interface ConversationSnapshot {
   readonly destination: ConversationDestination;
   readonly boundary?: StableMessageIdentity;
   readonly complete: boolean;
   readonly messages: readonly QualifyingConversationMessage[];
+  readonly selectedAttachments: readonly AttachmentSelection[];
 }
 
 export class ConversationObservationError extends Error {
@@ -80,10 +88,18 @@ export class ConversationObservationError extends Error {
   }
 }
 
+export class ConversationOrderError extends Error {
+  public constructor() {
+    super("Conversation order is invalid.");
+    this.name = "ConversationOrderError";
+  }
+}
+
 export function parseConversation(request: ConversationParseRequest): ConversationSnapshot {
   validateRequest(request);
 
   const messages: QualifyingConversationMessage[] = [];
+  const selectedAttachments: AttachmentSelection[] = [];
   for (const observation of request.observation.messages) {
     if (observation.identity === request.boundary || !isQualifying(observation)) {
       continue;
@@ -97,6 +113,26 @@ export function parseConversation(request: ConversationParseRequest): Conversati
       timestamp: observation.timestamp
     });
 
+    let selectedForMessage = 0;
+    for (const attachment of observation.attachments) {
+      if (
+        selectedAttachments.length === request.attachmentLimitTotal ||
+        selectedForMessage === request.attachmentLimitPerMessage
+      ) {
+        break;
+      }
+
+      if (request.supportedAttachmentMediaTypes.includes(attachment.mediaType)) {
+        selectedAttachments.push({
+          owner: observation.identity,
+          index: attachment.index,
+          mediaType: attachment.mediaType,
+          selection: attachment.selection
+        });
+        selectedForMessage += 1;
+      }
+    }
+
     if (messages.length === request.messageLimit) {
       break;
     }
@@ -106,7 +142,8 @@ export function parseConversation(request: ConversationParseRequest): Conversati
     destination: request.destination,
     ...(request.boundary === undefined ? {} : { boundary: request.boundary }),
     complete: messages.length === request.messageLimit,
-    messages
+    messages,
+    selectedAttachments
   };
 }
 
@@ -129,6 +166,8 @@ function validateRequest(request: unknown): asserts request is ConversationParse
   ) {
     throw new ConversationObservationError();
   }
+
+  validateAttachmentIndexes(request.observation.messages);
 }
 
 function isPositiveInteger(value: unknown): value is number {
@@ -167,8 +206,36 @@ function isConversationObservation(value: unknown): value is ConversationObserva
     typeof value.text === "string" &&
     isConversationAuthor(value.author) &&
     typeof value.timestamp === "string" &&
-    Array.isArray(value.attachments)
+    Array.isArray(value.attachments) &&
+    value.attachments.every(isConversationAttachmentObservation)
   );
+}
+
+function isConversationAttachmentObservation(value: unknown): value is ConversationAttachmentObservation {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["index", "mediaType", "selection"]) &&
+    typeof value.index === "number" &&
+    typeof value.mediaType === "string" &&
+    value.mediaType.trim().length > 0 &&
+    typeof value.selection === "string"
+  );
+}
+
+function validateAttachmentIndexes(messages: readonly ConversationObservation[]): void {
+  for (const message of messages) {
+    let previousIndex = -1;
+    for (const attachment of message.attachments) {
+      if (
+        !Number.isInteger(attachment.index) ||
+        attachment.index < 0 ||
+        attachment.index <= previousIndex
+      ) {
+        throw new ConversationOrderError();
+      }
+      previousIndex = attachment.index;
+    }
+  }
 }
 
 function isConversationAuthor(value: unknown): value is ConversationAuthor {
@@ -177,4 +244,8 @@ function isConversationAuthor(value: unknown): value is ConversationAuthor {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowedKeys.includes(key));
 }
