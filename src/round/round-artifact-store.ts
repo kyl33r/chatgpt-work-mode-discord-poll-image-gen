@@ -7,6 +7,7 @@ import {
   ROUND_BASE_IMAGE_BASENAME,
   ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN,
   ROUND_FEEDBACK_IMAGES_DIRECTORY_NAME,
+  ROUND_RESULT_IMAGE_BASENAME,
   SUPPORTED_IMAGE_EXTENSIONS
 } from "../constants.js";
 import { assertSafeRoundId, roundCapsuleDirectory } from "./round-paths.js";
@@ -221,7 +222,14 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
     errorMessage: string
   ): Promise<string> {
     const resolvedPath = await this.requireCapsuleImage(roundId, candidatePath, errorMessage);
-    if (!(await isDecodableImageOfExpectedFormat(resolvedPath))) {
+    const resolvedCapsule = await realpath(roundCapsuleDirectory(this.roundsRoot, roundId));
+    const pathFromCapsule = relative(resolvedCapsule, resolvedPath);
+    const expectedName = `${ROUND_RESULT_IMAGE_BASENAME}${extname(resolvedPath).toLowerCase()}`;
+    if (
+      dirname(pathFromCapsule) !== "." ||
+      basename(pathFromCapsule) !== expectedName ||
+      !(await isDecodableImageOfExpectedFormat(resolvedPath))
+    ) {
       throw new Error(errorMessage);
     }
     return resolvedPath;

@@ -69,6 +69,29 @@ describe("JsonRoundArtifactStore", () => {
     ).rejects.toThrow("Recorded result image is missing or unsupported.");
   });
 
+  it("rejects other decodable images in the capsule as the round Result Image", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const capsule = join(roundsRoot, "R001");
+    const feedbackRoot = join(capsule, "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const baseImage = join(capsule, "base-image.png");
+    const feedbackImage = join(feedbackRoot, "message-1-attachment-0.png");
+    const image = await validPng();
+    await Promise.all([
+      writeFile(baseImage, image),
+      writeFile(feedbackImage, image)
+    ]);
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+
+    await expect(artifacts.requireResultImage("R001", baseImage)).rejects.toThrow(
+      "Recorded result image is missing or unsupported."
+    );
+    await expect(artifacts.requireResultImage("R001", feedbackImage)).rejects.toThrow(
+      "Recorded result image is missing or unsupported."
+    );
+  });
+
   it("never reuses a source capsule or overwrites an existing target capsule", async () => {
     const directory = await temporaryDirectory();
     const roundsRoot = join(directory, "rounds");
