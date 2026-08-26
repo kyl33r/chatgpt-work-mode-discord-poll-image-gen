@@ -55,6 +55,9 @@ const REQUIRED_COMMANDS: Record<(typeof EXPECTED_SKILLS)[number], readonly strin
   "get-discord-polls": [
     "plan-next",
     "get-round",
+    "plan-feedback-captures",
+    "prepare-feedback-image-capture",
+    "capture-feedback-image",
     "collect-messages",
     "prepare-prompt-synthesis",
     "confirm-synthesized-prompt",
@@ -248,18 +251,46 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     }
     if (skillName === "get-discord-polls") {
       for (const contract of [
+        "FEEDBACK_MESSAGE_LIMIT",
         "FEEDBACK_IMAGE_LIMIT_PER_MESSAGE",
         "FEEDBACK_IMAGE_LIMIT_PER_ROUND",
-        "supported visible media-download surface",
-        "bare CDN URL",
-        "feedback-images/",
-        "message-<one-based-slot>-attachment-<attachmentIndex>.<ext>",
+        "active Feedback Round",
+        "first `FEEDBACK_MESSAGE_LIMIT` qualifying messages",
+        "perform exactly one visible **Copy Image** action",
+        "`reuse-accepted-image`",
+        "run `mark-attention` immediately and stop",
+        "Never use a media-download surface, fetch a bare CDN URL, call a Discord API, access credentials, accept an arbitrary path, or depend on a parser branch.",
+        "Never automatically retry **Copy Image**",
         "attachmentIndex",
-        "never redownload",
         "Participant reference images are supporting visual context"
       ]) {
         if (!skillMarkdown.includes(contract)) {
           issues.push(`get-discord-polls: participant-image contract ${contract} is missing.`);
+        }
+      }
+      const orderedClipboardSteps = [
+        "`plan-feedback-captures`",
+        "`prepare-feedback-image-capture`",
+        "perform exactly one visible **Copy Image** action",
+        "`capture-feedback-image`"
+      ];
+      for (let index = 1; index < orderedClipboardSteps.length; index += 1) {
+        if (
+          skillMarkdown.indexOf(orderedClipboardSteps[index]!) <=
+          skillMarkdown.indexOf(orderedClipboardSteps[index - 1]!)
+        ) {
+          issues.push("get-discord-polls: clipboard acquisition steps are out of order.");
+          break;
+        }
+      }
+      for (const obsoleteWorkflow of [
+        "supported visible media-download surface",
+        "never redownload",
+        "retry an uncertain download",
+        "message-<one-based-slot>-attachment-<attachmentIndex>.<ext>"
+      ]) {
+        if (skillMarkdown.includes(obsoleteWorkflow)) {
+          issues.push(`get-discord-polls: obsolete download workflow ${obsoleteWorkflow} remains.`);
         }
       }
     }

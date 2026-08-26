@@ -90,13 +90,16 @@ describe("round CLI lifecycle", () => {
       { roundId: "RCLIP", boundaryMessageUrl, messages },
       store
     );
+    const browserActions: string[] = [];
     for (const [messageOrdinal, attachmentIndex] of [[1, 2], [2, 0]] as const) {
-      await expect(runCommand(
+      const prepared = await runCommand(
         "prepare-feedback-image-capture",
         { roundId: "RCLIP", messageOrdinal, attachmentIndex },
         store,
         { artifacts, clipboard }
-      )).resolves.toEqual({ action: "copy-visible-image" });
+      );
+      expect(prepared).toEqual({ action: "copy-visible-image" });
+      browserActions.push("copy-visible-image");
       await expect(runCommand(
         "capture-feedback-image",
         { roundId: "RCLIP", messageOrdinal, attachmentIndex },
@@ -104,6 +107,22 @@ describe("round CLI lifecycle", () => {
         { artifacts, clipboard, evaluation }
       )).resolves.toEqual({ action: "captured" });
     }
+    expect(browserActions).toEqual(["copy-visible-image", "copy-visible-image"]);
+    expect(clipboard.getChangeCountCallCount).toBe(2);
+
+    const restartStore = new JsonRoundStateStore(join(directory, "restart-rounds"));
+    const restartArtifacts = new FakeClipboardArtifacts();
+    await restartStore.save((await store.get("RCLIP"))!);
+    await expect(runCommand(
+      "prepare-feedback-image-capture",
+      { roundId: "RCLIP", messageOrdinal: 1, attachmentIndex: 2 },
+      restartStore,
+      { artifacts: restartArtifacts, clipboard }
+    )).resolves.toEqual({ action: "reuse-accepted-image" });
+    expect(clipboard.getChangeCountCallCount).toBe(2);
+    expect(restartArtifacts.requiredFeedbackImages).toEqual([
+      { roundId: "RCLIP", messageOrdinal: 1, attachmentIndex: 2, imagePath: "accepted-1-2.png" }
+    ]);
     expect(evaluationRecords).toHaveLength(2);
     expect(evaluationRecords.map((record) => ({
       scenarioCode: record.scenarioCode,
@@ -277,12 +296,26 @@ describe("round CLI lifecycle", () => {
       { roundId: "RCLIP", closedMessageUrl: "https://discord.test/messages/closed" },
       store
     );
-    await expect(runCommand("prepare-generation", { roundId: "RCLIP" }, store, { artifacts }))
-      .resolves.toMatchObject({
-        baseImagePath,
-        contextImagePaths: ["accepted-1-2.png", "accepted-2-0.png"],
-        instruction: prompt
-      });
+    const generation = await runCommand(
+      "prepare-generation",
+      { roundId: "RCLIP" },
+      store,
+      { artifacts }
+    );
+    expect(generation).toMatchObject({
+      baseImagePath,
+      contextImagePaths: ["accepted-1-2.png", "accepted-2-0.png"],
+      instruction: prompt
+    });
+    const generationInputs = generation as {
+      baseImagePath: string;
+      contextImagePaths: string[];
+    };
+    expect([generationInputs.baseImagePath, ...generationInputs.contextImagePaths]).toEqual([
+      baseImagePath,
+      "accepted-1-2.png",
+      "accepted-2-0.png"
+    ]);
   });
 
   it("completes one five-message image round across every external-action boundary", async () => {
@@ -461,8 +494,10 @@ class SequenceMonotonicClock {
 
 class SequencedClipboardImageSource implements ClipboardImageSource {
   private changeCount = 10;
+  public getChangeCountCallCount = 0;
 
   public async getChangeCount(): Promise<number> {
+    this.getChangeCountCallCount += 1;
     return this.changeCount;
   }
 

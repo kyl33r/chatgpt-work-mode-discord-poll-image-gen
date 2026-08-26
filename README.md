@@ -2,7 +2,7 @@
 
 A Work-native proof of concept for collaborative image editing in Discord.
 
-The owner starts a round from ChatGPT with a Base Image attached here or linked from one exact Discord message. ChatGPT Work posts it to the allowlisted channel, captures the first configured number of ordinary non-empty text messages plus bounded optional participant images after that boundary, synthesizes and publicly records one final prompt, attempts one edit with `$imagegen`, and returns one controlled success, refusal, or failure outcome to Discord.
+The owner starts a round from ChatGPT with a Base Image attached here or linked from one exact Discord message. ChatGPT Work posts it to the allowlisted channel, captures the first configured number of ordinary non-empty text messages plus bounded optional participant images after that boundary, synthesizes and publicly records one final prompt, attempts one edit with `$imagegen`, and returns one controlled success, refusal, or failure outcome to Discord. Each selected participant image is acquired through one visible **Copy Image** action after durable intent, then decoded and stored from the macOS clipboard inside the owning round.
 
 The POC deliberately uses no Discord bot, Discord token, incoming webhook, OpenAI API key, or second Playwright-controlled ChatGPT browser.
 
@@ -14,11 +14,11 @@ Another agent host—such as Claude Cowork, a Gemini environment, or a future eq
 
 - a browser integration directly controlled by the agent;
 - a persistent browser profile in which the owner can manually sign into Discord;
-- visible-page navigation, reading, posting, file download, clipboard paste, and attachment upload;
+- visible-page navigation, reading, posting, exact-attachment **Copy Image**, clipboard access, clipboard paste, and attachment upload;
 - local filesystem access to this repository, `skills/`, and gitignored `.state/` data;
 - image-generation or image-editing capability that accepts the Base Image and ordered Participant Reference Images;
 - a task that can remain active for supervised polling or can be explicitly resumed from durable state; and
-- confirmation boundaries and fail-closed handling for uncertain posts, uploads, downloads, or generation attempts.
+- confirmation boundaries and fail-closed handling for uncertain posts, uploads, clipboard captures, or generation attempts.
 
 Provider equivalence is capability-based, not a declaration that every Claude, Gemini, or other product currently implements these interfaces. A new host requires an adapter and a supervised compatibility test before it is treated as supported. A normal browser that the agent cannot inspect and operate is insufficient.
 
@@ -45,7 +45,7 @@ Skills are supervised workflows, not background listeners. `$round-start` keeps 
 
 1. Start from an explicit owner instruction in ChatGPT.
 2. Post one Base Image and start marker into one allowlisted Discord channel.
-3. Capture the first five ordinary non-empty text messages, including repeated authors and random text. Each message may contribute the first two supported attachments, capped at five participant images for the round.
+3. Capture the first five ordinary non-empty text messages, including repeated authors and random text. Each message may contribute the first two supported attachments, capped at five participant images for the round. For each selected image, persist copy intent, perform exactly one visible **Copy Image**, and accept the validated clipboard artifact before advancing.
 4. Synthesize all five messages into one sanitized prompt and post it with the closed marker; later messages are ignored.
 5. Attempt one Base Image edit here using that exact persisted prompt.
 6. Post and visibly confirm one Result Image or sanitized refusal/failure status without duplicating side effects.
@@ -54,7 +54,7 @@ Use `$continue-from-result` to start a new isolated round from the Result Image 
 
 ## Local state
 
-The first implementation persists the private Discord Channel Allowlist in `.state/discord-channel-allowlist.json` and each round independently beneath `.state/rounds/<round-id>/`, with its own `round.json`, Base Image, Result Image, and migration backups. Updating one round never rewrites another round's files. `.runtime/` contains only disposable command payloads. CLI and domain behavior use replaceable store interfaces; a local SQLite state adapter can implement the same contracts if real concurrency, transactional, query, recovery, or performance needs demonstrate that JSON is no longer suitable.
+The first implementation persists the private Discord Channel Allowlist in `.state/discord-channel-allowlist.json` and each round independently beneath `.state/rounds/<round-id>/`, with its own `round.json`, Base Image, Result Image, accepted participant images, and migration backups. Updating one round never rewrites another round's files. `.runtime/` contains only disposable command payloads. CLI and domain behavior use replaceable store interfaces; a local SQLite state adapter can implement the same contracts if real concurrency, transactional, query, recovery, or performance needs demonstrate that JSON is no longer suitable.
 
 ## Local verification
 

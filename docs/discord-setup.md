@@ -4,7 +4,7 @@ This POC uses the signed-in Discord web UI. It does not need a bot, webhook, Dis
 
 ## Agent-host prerequisites
 
-ChatGPT Work in the ChatGPT desktop app is the validated reference host for this POC. The host must give the agent direct control of an authenticated browser and local access to this repository. Opening Discord in an ordinary browser tab is not sufficient if the agent cannot inspect the visible page, navigate to the allowlisted channel, paste or upload images, read bounded messages and attachments, and verify the resulting posts.
+ChatGPT Work in the ChatGPT desktop app is the validated reference host for this POC. The host must give the agent direct control of an authenticated browser and local access to this repository. Opening Discord in an ordinary browser tab is not sufficient if the agent cannot inspect the visible page, navigate to the allowlisted channel, paste or upload images, read bounded messages and attachments, copy one exact visible attachment to the clipboard, and verify the resulting posts.
 
 An equivalent environment from another model or provider—including a Claude Cowork or Gemini-based environment—may be adapted when it supplies the same browser-control, local-filesystem, durable-state, image-editing, and confirmation capabilities. These names are examples of possible host categories, not a guarantee of current compatibility.
 
@@ -14,7 +14,7 @@ Before using another host, verify that it can:
 2. open the privately stored allowlisted channel from a fresh browser state;
 3. inspect visible Discord messages and attachments without Discord tokens or internal APIs;
 4. paste or upload the Base Image and Result Image and confirm the stable posted message;
-5. download selected visible attachments into the owning Round State Capsule;
+5. perform one visible **Copy Image** action per newly selected attachment after durable intent, then validate and store the clipboard image in the owning Round State Capsule;
 6. read and execute the canonical project skills under `skills/`;
 7. read and update the worktree-local, gitignored `.state/` records;
 8. edit images using the Base Image first and Participant Reference Images as ordered supporting context;
@@ -52,7 +52,7 @@ The skill stages the selected image inside its gitignored `.state/rounds/<round-
 ## Run one supervised round
 
 1. Invoke `$round-start` with the ChatGPT attachment or exact Discord message link.
-2. Let any participants post ordinary non-empty text after the Base Image boundary. No prefix is required and repeated authors count. A qualifying message may include PNG, JPEG, or WebP attachments; only the first two supported images per message and first five across the round are used, in visible order. Attachment-only messages do not count.
+2. Let any participants post ordinary non-empty text after the Base Image boundary. No prefix is required and repeated authors count. A qualifying message may include PNG, JPEG, or WebP attachments; only the first two supported images per message and first five across the round are used, in visible order. Attachment-only messages do not count. Each selected image is prepared durably, copied once through the exact visible attachment's **Copy Image** action, and captured from the clipboard before the next image is selected.
 3. Keep the supervised task active for bounded scans until the configured five-message limit is reached. Skills are not background listeners; ending the task pauses collection until the owner resumes it or separately approves a background service.
 4. Confirm the returned closed-marker post containing the sanitized final prompt; later messages no longer count.
 5. Let `$round-start` invoke `$imagegen` here exactly once using that persisted prompt.
@@ -60,11 +60,11 @@ The skill stages the selected image inside its gitignored `.state/rounds/<round-
 
 To improve the latest successful Result Image in another round, invoke `$continue-from-result`. It selects the most recently started completed success in this channel, copies that image into a new isolated round capsule, posts it as the new Base Image after confirmation, and then resumes `$round-start`. Arbitrary round IDs, cross-channel sources, and refused or failed results are not eligible.
 
-Selected attachments are downloaded only through the signed-in browser's visible media surface and staged under the owning round capsule. The skills request confirmation at live posting boundaries when required. If Discord login, destination, attachment acquisition, poll state, image generation, or upload confirmation is ambiguous, the round pauses as `needs-attention` and does not retry automatically.
+Selected attachments are never downloaded or fetched from a CDN. After the local command persists copy intent, the skill performs exactly one visible **Copy Image** action and the deterministic local boundary validates and installs the clipboard bytes under the owning round capsule. Accepted images are reused after restart without another browser action. The skills request confirmation at live posting boundaries when required. If Discord login, destination, attachment selection, clipboard state, poll state, image generation, or upload confirmation is ambiguous, the round pauses as `needs-attention` and does not retry automatically.
 
 ## Local state and troubleshooting
 
-Restart-critical state lives inside this worktree. `.state/discord-channel-allowlist.json` owns the single private destination, while isolated `.state/rounds/<round-id>/` capsules own each round's `round.json`, Base Image, Result Image, and migration backups. All are ignored by Git and contain no credentials. `.runtime/` contains only disposable command payloads.
+Restart-critical state lives inside this worktree. `.state/discord-channel-allowlist.json` owns the single private destination, while isolated `.state/rounds/<round-id>/` capsules own each round's `round.json`, Base Image, accepted participant images, Result Image, and migration backups. All are ignored by Git and contain no credentials. `.runtime/` contains only disposable command payloads.
 
 - Do not delete or hand-edit state during an active round.
 - Channel changes are locked until every round is terminal.

@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -9,6 +10,41 @@ const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 describe("project skills", () => {
   it("have valid metadata, discovery cues, command boundaries, and canonical links", async () => {
     await expect(validateSkills(repositoryRoot)).resolves.toEqual([]);
+  });
+
+  it("governs clipboard acquisition for bounded Discord feedback images", async () => {
+    const skill = await readFile(
+      fileURLToPath(new URL("../skills/get-discord-polls/SKILL.md", import.meta.url)),
+      "utf8"
+    );
+    const planIndex = skill.indexOf("`plan-feedback-captures`");
+    const prepareIndex = skill.indexOf("`prepare-feedback-image-capture`");
+    const copyIndex = skill.indexOf("perform exactly one visible **Copy Image** action");
+    const captureIndex = skill.indexOf("`capture-feedback-image`");
+
+    expect(planIndex).toBeGreaterThan(-1);
+    expect(prepareIndex).toBeGreaterThan(planIndex);
+    expect(copyIndex).toBeGreaterThan(prepareIndex);
+    expect(captureIndex).toBeGreaterThan(copyIndex);
+    expect(skill).toContain("`reuse-accepted-image`");
+    expect(skill).toContain("active Feedback Round");
+    expect(skill).toContain("first `FEEDBACK_MESSAGE_LIMIT` qualifying messages");
+    expect(skill).toContain("FEEDBACK_IMAGE_LIMIT_PER_MESSAGE");
+    expect(skill).toContain("FEEDBACK_IMAGE_LIMIT_PER_ROUND");
+    expect(skill).toContain("run `mark-attention` immediately and stop");
+    expect(skill).toContain(
+      "Never use a media-download surface, fetch a bare CDN URL, call a Discord API, access credentials, accept an arbitrary path, or depend on a parser branch."
+    );
+    expect(skill).toContain("Never automatically retry **Copy Image**");
+
+    for (const obsoleteWorkflow of [
+      "supported visible media-download surface",
+      "never redownload",
+      "retry an uncertain download",
+      "message-<one-based-slot>-attachment-<attachmentIndex>.<ext>"
+    ]) {
+      expect(skill).not.toContain(obsoleteWorkflow);
+    }
   });
 
   it.each([

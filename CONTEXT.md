@@ -25,7 +25,7 @@ The exact first-observed visible text, stable identity, and bounded ordered Part
 _Avoid_: Candidate, vote, selected feedback
 
 **Participant Reference Image**:
-An optional validated PNG, JPEG, or WebP attachment from a qualifying Captured Message. It supplies supporting visual context in message and attachment order; it never replaces the Base Image as the edit target.
+An optional validated PNG, JPEG, or WebP attachment from a qualifying Captured Message. After durable copy intent, one exact visible **Copy Image** action supplies clipboard bytes that are decoded and stored in the owning Round State Capsule. The image supplies supporting visual context in message and attachment order; it never replaces the Base Image as the edit target. An accepted image is reused after restart without another browser action.
 _Avoid_: New base image, winning image, republished attachment
 
 **Synthesized Prompt**:
