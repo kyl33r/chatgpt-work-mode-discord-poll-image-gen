@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { constants as fileSystemConstants } from "node:fs";
+import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   CONVERSATION_HANDOFF_REQUEST_SUFFIX,
   CONVERSATION_HANDOFF_ROOT,
   CONVERSATION_HANDOFF_SCHEMA_VERSION,
-  CONVERSATION_HANDOFF_SNAPSHOT_SUFFIX
+  CONVERSATION_HANDOFF_SNAPSHOT_SUFFIX,
+  RUNTIME_ROOT
 } from "../constants.js";
 import type {
   AttachmentSelection,
@@ -42,7 +45,43 @@ interface SnapshotRecord {
 }
 
 export class JsonConversationPrivateHandoff implements ConversationPrivateHandoff {
-  public constructor(private readonly root: string = CONVERSATION_HANDOFF_ROOT) {}
+  private readonly delegate: ConversationPrivateHandoff;
+
+  public constructor() {
+    this.delegate = new FilesystemConversationPrivateHandoff(process.cwd());
+  }
+
+  public writeRequest(
+    invocationId: string,
+    request: ConversationObservationRequest
+  ): Promise<void> {
+    return this.delegate.writeRequest(invocationId, request);
+  }
+
+  public readRequest(
+    invocationId: string
+  ): Promise<ConversationObservationRequest | undefined> {
+    return this.delegate.readRequest(invocationId);
+  }
+
+  public writeSnapshot(invocationId: string, snapshot: ConversationSnapshot): Promise<void> {
+    return this.delegate.writeSnapshot(invocationId, snapshot);
+  }
+
+  public readSnapshot(invocationId: string): Promise<ConversationSnapshot | undefined> {
+    return this.delegate.readSnapshot(invocationId);
+  }
+}
+
+class FilesystemConversationPrivateHandoff implements ConversationPrivateHandoff {
+  private readonly runtimeRoot: string;
+  private readonly root: string;
+
+  public constructor(private readonly workspaceRoot: string) {
+    this.workspaceRoot = resolve(workspaceRoot);
+    this.runtimeRoot = join(this.workspaceRoot, RUNTIME_ROOT);
+    this.root = join(this.workspaceRoot, CONVERSATION_HANDOFF_ROOT);
+  }
 
   public async writeRequest(
     invocationId: string,
@@ -51,11 +90,16 @@ export class JsonConversationPrivateHandoff implements ConversationPrivateHandof
     if (!isObservationRequest(request)) {
       throw new ConversationPrivateHandoffError();
     }
-    await this.write(invocationId, CONVERSATION_HANDOFF_REQUEST_SUFFIX, {
-      schemaVersion: CONVERSATION_HANDOFF_SCHEMA_VERSION,
-      kind: "request",
-      request
-    });
+    await this.write(
+      invocationId,
+      CONVERSATION_HANDOFF_REQUEST_SUFFIX,
+      {
+        schemaVersion: CONVERSATION_HANDOFF_SCHEMA_VERSION,
+        kind: "request",
+        request
+      },
+      isRequestRecord
+    );
   }
 
   public async readRequest(
@@ -73,11 +117,16 @@ export class JsonConversationPrivateHandoff implements ConversationPrivateHandof
     if (!isConversationSnapshot(snapshot)) {
       throw new ConversationPrivateHandoffError();
     }
-    await this.write(invocationId, CONVERSATION_HANDOFF_SNAPSHOT_SUFFIX, {
-      schemaVersion: CONVERSATION_HANDOFF_SCHEMA_VERSION,
-      kind: "snapshot",
-      snapshot
-    });
+    await this.write(
+      invocationId,
+      CONVERSATION_HANDOFF_SNAPSHOT_SUFFIX,
+      {
+        schemaVersion: CONVERSATION_HANDOFF_SCHEMA_VERSION,
+        kind: "snapshot",
+        snapshot
+      },
+      isSnapshotRecord
+    );
   }
 
   public async readSnapshot(invocationId: string): Promise<ConversationSnapshot | undefined> {
@@ -89,9 +138,15 @@ export class JsonConversationPrivateHandoff implements ConversationPrivateHandof
     return record?.snapshot;
   }
 
-  private async write(invocationId: string, suffix: string, record: unknown): Promise<void> {
+  private async write<Record>(
+    invocationId: string,
+    suffix: string,
+    record: Record,
+    validate: (value: unknown) => value is Record
+  ): Promise<void> {
     requireInvocationId(invocationId);
-    await preparePrivateRoot(this.root);
+    const contents = serializeRecord(record, validate);
+    await preparePrivateRoot(this.workspaceRoot, this.runtimeRoot, this.root);
     const recordPath = join(this.root, `${invocationId}${suffix}`);
     await requireRegularRecordIfPresent(recordPath, false);
     const temporaryPath = join(
@@ -103,12 +158,11 @@ export class JsonConversationPrivateHandoff implements ConversationPrivateHandof
     try {
       handle = await open(temporaryPath, "wx", 0o600);
       ownsTemporaryPath = true;
-      await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
+      await handle.writeFile(contents, "utf8");
       await handle.sync();
       await handle.close();
       handle = undefined;
       await rename(temporaryPath, recordPath);
-      await chmod(recordPath, 0o600);
       await syncDirectory(this.root);
     } catch {
       await handle?.close().catch(() => undefined);
@@ -126,14 +180,15 @@ export class JsonConversationPrivateHandoff implements ConversationPrivateHandof
   ): Promise<Record | undefined> {
     requireInvocationId(invocationId);
     try {
-      if (!(await requirePrivateRootIfPresent(this.root, true))) {
+      if (!(await requirePrivateRootIfPresent(this.workspaceRoot, this.runtimeRoot, this.root))) {
         return undefined;
       }
       const recordPath = join(this.root, `${invocationId}${suffix}`);
-      if (!(await requireRegularRecordIfPresent(recordPath, true))) {
+      const contents = await readPrivateRecord(recordPath);
+      if (contents === undefined) {
         return undefined;
       }
-      const value = JSON.parse(await readFile(recordPath, "utf8")) as unknown;
+      const value = JSON.parse(contents) as unknown;
       if (!validate(value)) {
         throw new ConversationPrivateHandoffError();
       }
@@ -153,7 +208,7 @@ export class JsonConversationPrivateHandoff implements ConversationPrivateHandof
 function isRequestRecord(value: unknown): value is RequestRecord {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ["schemaVersion", "kind", "request"]) &&
+    hasExactOwnDataKeys(value, ["schemaVersion", "kind", "request"]) &&
     value.schemaVersion === CONVERSATION_HANDOFF_SCHEMA_VERSION &&
     value.kind === "request" &&
     isObservationRequest(value.request)
@@ -163,7 +218,7 @@ function isRequestRecord(value: unknown): value is RequestRecord {
 function isSnapshotRecord(value: unknown): value is SnapshotRecord {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ["schemaVersion", "kind", "snapshot"]) &&
+    hasExactOwnDataKeys(value, ["schemaVersion", "kind", "snapshot"]) &&
     value.schemaVersion === CONVERSATION_HANDOFF_SCHEMA_VERSION &&
     value.kind === "snapshot" &&
     isConversationSnapshot(value.snapshot)
@@ -173,7 +228,11 @@ function isSnapshotRecord(value: unknown): value is SnapshotRecord {
 function isObservationRequest(value: unknown): value is ConversationObservationRequest {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ["destination", "boundary", "stopAfterQualifyingMessages"]) &&
+    hasExactOwnDataKeys(
+      value,
+      ["destination", "stopAfterQualifyingMessages"],
+      ["boundary"]
+    ) &&
     isNonEmptyString(value.destination) &&
     (value.boundary === undefined || isNonEmptyString(value.boundary)) &&
     typeof value.stopAfterQualifyingMessages === "number" &&
@@ -185,24 +244,19 @@ function isObservationRequest(value: unknown): value is ConversationObservationR
 function isConversationSnapshot(value: unknown): value is ConversationSnapshot {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, [
-      "destination",
-      "boundary",
-      "segmentStart",
-      "complete",
-      "messages",
-      "selectedAttachments"
-    ]) ||
+    !hasExactOwnDataKeys(
+      value,
+      ["destination", "complete", "messages", "selectedAttachments"],
+      ["boundary", "segmentStart"]
+    ) ||
     !isNonEmptyString(value.destination) ||
     (value.boundary !== undefined && !isNonEmptyString(value.boundary)) ||
     (value.segmentStart !== undefined && !isNonEmptyString(value.segmentStart)) ||
     (value.boundary === undefined) === (value.segmentStart === undefined) ||
     typeof value.complete !== "boolean" ||
-    !Array.isArray(value.messages) ||
-    !isDenseArray(value.messages) ||
+    !isPlainDenseArray(value.messages) ||
     !value.messages.every(isQualifyingMessage) ||
-    !Array.isArray(value.selectedAttachments) ||
-    !isDenseArray(value.selectedAttachments) ||
+    !isPlainDenseArray(value.selectedAttachments) ||
     !value.selectedAttachments.every(isAttachmentSelection)
   ) {
     return false;
@@ -233,13 +287,13 @@ function isConversationSnapshot(value: unknown): value is ConversationSnapshot {
 function isQualifyingMessage(value: unknown): value is QualifyingConversationMessage {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ["identity", "kind", "text", "author", "timestamp"]) &&
+    hasExactOwnDataKeys(value, ["identity", "kind", "text", "author", "timestamp"]) &&
     isNonEmptyString(value.identity) &&
     value.kind === "ordinary-text" &&
     typeof value.text === "string" &&
     value.text.trim().length > 0 &&
     isRecord(value.author) &&
-    hasOnlyKeys(value.author, ["id", "name"]) &&
+    hasExactOwnDataKeys(value.author, ["id", "name"]) &&
     typeof value.author.id === "string" &&
     typeof value.author.name === "string" &&
     isVisibleTimestamp(value.timestamp)
@@ -249,7 +303,7 @@ function isQualifyingMessage(value: unknown): value is QualifyingConversationMes
 function isAttachmentSelection(value: unknown): value is AttachmentSelection {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ["owner", "index", "mediaType", "selection"]) &&
+    hasExactOwnDataKeys(value, ["owner", "index", "mediaType", "selection"]) &&
     isNonEmptyString(value.owner) &&
     typeof value.index === "number" &&
     Number.isInteger(value.index) &&
@@ -275,12 +329,29 @@ function isVisibleTimestamp(value: unknown): value is string {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
 }
 
-function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  return Reflect.ownKeys(value).every(
-    (key) => typeof key === "string" && allowed.includes(key)
+function hasExactOwnDataKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = []
+): boolean {
+  const allowed = [...required, ...optional];
+  const keys = Reflect.ownKeys(value);
+  return (
+    !("toJSON" in value) &&
+    required.every((key) => Object.hasOwn(value, key)) &&
+    keys.every((key) =>
+      typeof key === "string" &&
+      allowed.includes(key) &&
+      isEnumerableDataProperty(value, key)
+    )
   );
 }
 
@@ -288,22 +359,83 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-function isDenseArray(value: readonly unknown[]): boolean {
+function isPlainDenseArray(value: unknown): value is readonly unknown[] {
+  if (
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    "toJSON" in value
+  ) {
+    return false;
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== value.length + 1 || !keys.includes("length")) {
+    return false;
+  }
   for (let index = 0; index < value.length; index += 1) {
-    if (!Object.prototype.hasOwnProperty.call(value, index)) {
+    const key = String(index);
+    if (!Object.hasOwn(value, key) || !isEnumerableDataProperty(value, key)) {
       return false;
     }
   }
-  return true;
+  return keys.every(
+    (key) =>
+      typeof key === "string" &&
+      (key === "length" || (/^(?:0|[1-9]\d*)$/.test(key) && Number(key) < value.length))
+  );
 }
 
-async function preparePrivateRoot(root: string): Promise<void> {
+function isEnumerableDataProperty(value: object, key: PropertyKey): boolean {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor !== undefined && "value" in descriptor && descriptor.enumerable === true;
+}
+
+function serializeRecord<Record>(
+  record: Record,
+  validate: (value: unknown) => value is Record
+): string {
   try {
-    await mkdir(root, { recursive: true, mode: 0o700 });
-    if (!(await requirePrivateRootIfPresent(root, false))) {
+    if (!validate(record)) {
       throw new ConversationPrivateHandoffError();
     }
-    await chmod(root, 0o700);
+    const serialized = JSON.stringify(record);
+    const roundTripped = JSON.parse(serialized) as unknown;
+    if (
+      !validate(roundTripped) ||
+      !isDeepStrictEqual(record, roundTripped) ||
+      JSON.stringify(roundTripped) !== serialized
+    ) {
+      throw new ConversationPrivateHandoffError();
+    }
+    return `${serialized}\n`;
+  } catch (error) {
+    if (error instanceof ConversationPrivateHandoffError) {
+      throw error;
+    }
+    throw new ConversationPrivateHandoffError();
+  }
+}
+
+async function preparePrivateRoot(
+  workspaceRoot: string,
+  runtimeRoot: string,
+  handoffRoot: string
+): Promise<void> {
+  try {
+    if (!(await requireDirectoryIfPresent(workspaceRoot, false, false))) {
+      throw new ConversationPrivateHandoffError();
+    }
+    for (const directory of [runtimeRoot, handoffRoot]) {
+      try {
+        await mkdir(directory, { mode: 0o700 });
+      } catch (error) {
+        if (!isAlreadyExistsError(error)) {
+          throw error;
+        }
+      }
+      if (!(await requireDirectoryIfPresent(directory, false, true))) {
+        throw new ConversationPrivateHandoffError();
+      }
+    }
   } catch (error) {
     if (error instanceof ConversationPrivateHandoffError) {
       throw error;
@@ -313,27 +445,89 @@ async function preparePrivateRoot(root: string): Promise<void> {
 }
 
 async function requirePrivateRootIfPresent(
-  root: string,
-  requirePrivatePermissions: boolean
+  workspaceRoot: string,
+  runtimeRoot: string,
+  handoffRoot: string
 ): Promise<boolean> {
+  if (!(await requireDirectoryIfPresent(workspaceRoot, false, false))) {
+    throw new ConversationPrivateHandoffError();
+  }
+  if (!(await requireDirectoryIfPresent(runtimeRoot, true, false))) {
+    return false;
+  }
+  return requireDirectoryIfPresent(handoffRoot, true, false);
+}
+
+async function requireDirectoryIfPresent(
+  directory: string,
+  requirePrivatePermissions: boolean,
+  makePrivate: boolean
+): Promise<boolean> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    const metadata = await lstat(root);
+    try {
+      handle = await open(
+        directory,
+        fileSystemConstants.O_RDONLY | fileSystemConstants.O_NOFOLLOW
+      );
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return false;
+      }
+      throw error;
+    }
+    const metadata = await handle.stat();
     if (
       !metadata.isDirectory() ||
-      metadata.isSymbolicLink() ||
       (requirePrivatePermissions && (metadata.mode & 0o077) !== 0)
     ) {
       throw new ConversationPrivateHandoffError();
     }
+    if (makePrivate) {
+      await handle.chmod(0o700);
+    }
     return true;
   } catch (error) {
-    if (isMissingFileError(error)) {
-      return false;
-    }
     if (error instanceof ConversationPrivateHandoffError) {
       throw error;
     }
     throw new ConversationPrivateHandoffError();
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function readPrivateRecord(recordPath: string): Promise<string | undefined> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    try {
+      handle = await open(
+        recordPath,
+        fileSystemConstants.O_RDONLY | fileSystemConstants.O_NOFOLLOW
+      );
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return undefined;
+      }
+      throw error;
+    }
+
+    const metadata = await handle.stat();
+    if (
+      !metadata.isFile() ||
+      metadata.nlink !== 1 ||
+      (metadata.mode & 0o077) !== 0
+    ) {
+      throw new ConversationPrivateHandoffError();
+    }
+    return await handle.readFile("utf8");
+  } catch (error) {
+    if (error instanceof ConversationPrivateHandoffError) {
+      throw error;
+    }
+    throw new ConversationPrivateHandoffError();
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 
@@ -364,8 +558,15 @@ async function requireRegularRecordIfPresent(
 }
 
 async function syncDirectory(root: string): Promise<void> {
-  const handle = await open(root, "r");
+  const handle = await open(
+    root,
+    fileSystemConstants.O_RDONLY | fileSystemConstants.O_NOFOLLOW
+  );
   try {
+    const metadata = await handle.stat();
+    if (!metadata.isDirectory()) {
+      throw new ConversationPrivateHandoffError();
+    }
     await handle.sync();
   } finally {
     await handle.close();
@@ -380,4 +581,8 @@ function requireInvocationId(value: string): void {
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === "EEXIST";
 }
