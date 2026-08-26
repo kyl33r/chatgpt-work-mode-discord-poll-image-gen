@@ -46,8 +46,26 @@ describe("project skills", () => {
   });
 
   it.each([
+    [
+      "observe-discord-conversation",
+      "get-discord-polls",
+      "Use $observe-discord-conversation to scan round messages in Discord."
+    ],
+    [
+      "get-discord-polls",
+      "observe-discord-conversation",
+      "Use $get-discord-polls to scan the allowlisted Discord conversation messages after this boundary."
+    ]
+  ])("gives explicit $%s invocation precedence over implicit $%s routing", (skillName, excludedSkill, prompt) => {
+    expect(matchesSkillPrompt(skillName, prompt)).toBe(true);
+    expect(matchesSkillPrompt(excludedSkill, prompt)).toBe(false);
+  });
+
+  it.each([
     "Scan the Discord text poll for its first five messages.",
     "Scan the allowlisted Discord poll messages after this boundary.",
+    "Scan the allowlisted Discord feedback messages after this boundary.",
+    "Scan the allowlisted Discord conversation messages for this round after this boundary.",
     "Collect feedback messages in the allowlisted Discord channel after this boundary.",
     "Close the Discord round poll after this boundary."
   ])("routes poll or round collection prompt only to get-discord-polls: %s", (prompt) => {
@@ -55,16 +73,22 @@ describe("project skills", () => {
     expect(matchesSkillPrompt("observe-discord-conversation", prompt)).toBe(false);
   });
 
-  it("routes a bounded allowlisted conversation observation only to the observer", () => {
-    const prompt = "Observe the allowlisted Discord conversation messages after this boundary.";
-
+  it.each([
+    "Read the allowlisted Discord conversation messages after this boundary.",
+    "Scan the allowlisted Discord conversation messages after this boundary.",
+    "Observe the allowlisted Discord conversation messages after this boundary.",
+    "Scan the allowlisted Discord messages after this boundary."
+  ])("routes bounded allowlisted conversation prompt only to the observer: %s", (prompt) => {
     expect(matchesSkillPrompt("observe-discord-conversation", prompt)).toBe(true);
     expect(matchesSkillPrompt("get-discord-polls", prompt)).toBe(false);
   });
 
-  it("continues to route ordinary round-message collection to get-discord-polls", () => {
-    const prompt = "Collect round messages in Discord.";
-
+  it.each([
+    "Collect round messages in Discord.",
+    "Collect Discord messages for the current round.",
+    "Close the Discord message collection.",
+    "Scan Discord messages."
+  ])("continues to route ordinary message collection to get-discord-polls: %s", (prompt) => {
     expect(matchesSkillPrompt("get-discord-polls", prompt)).toBe(true);
     expect(matchesSkillPrompt("observe-discord-conversation", prompt)).toBe(false);
   });

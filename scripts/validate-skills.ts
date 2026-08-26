@@ -43,7 +43,7 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
   "get-discord-polls": [["collect", "scan", "close"], ["message", "poll", "feedback"]],
   "image-gen": [["edit", "generate", "publish"], ["image"], ["feedback", "poll"]],
   "observe-discord-conversation": [
-    ["read", "observe"],
+    ["read", "observe", "scan"],
     ["message", "conversation"],
     ["boundary"],
     ["allowlisted"],
@@ -136,17 +136,30 @@ export function matchesSkillPrompt(skillName: string, prompt: string): boolean {
   if (!EXPECTED_SKILLS.includes(skillName as (typeof EXPECTED_SKILLS)[number])) {
     return false;
   }
-  if (prompt.includes(`$${skillName}`)) {
-    return true;
+  const explicitlyInvokedSkills = EXPECTED_SKILLS.filter((expectedSkill) =>
+    prompt.includes(`$${expectedSkill}`)
+  );
+  if (explicitlyInvokedSkills.length > 0) {
+    return explicitlyInvokedSkills.includes(skillName as (typeof EXPECTED_SKILLS)[number]);
   }
   const normalizedPrompt = prompt.toLowerCase();
-  if (
-    skillName === "observe-discord-conversation" &&
-    POLL_OR_ROUND_COLLECTION_PATTERN.test(normalizedPrompt)
-  ) {
+  const isImplicitObservationPrompt =
+    !POLL_OR_ROUND_COLLECTION_PATTERN.test(normalizedPrompt) &&
+    matchesImplicitPrompt(OBSERVATION_SKILL_NAME, normalizedPrompt);
+  if (skillName === OBSERVATION_SKILL_NAME) {
+    return isImplicitObservationPrompt;
+  }
+  if (skillName === "get-discord-polls" && isImplicitObservationPrompt) {
     return false;
   }
-  return IMPLICIT_TRIGGER_GROUPS[skillName as (typeof EXPECTED_SKILLS)[number]].every((group) =>
+  return matchesImplicitPrompt(skillName as (typeof EXPECTED_SKILLS)[number], normalizedPrompt);
+}
+
+function matchesImplicitPrompt(
+  skillName: (typeof EXPECTED_SKILLS)[number],
+  normalizedPrompt: string
+): boolean {
+  return IMPLICIT_TRIGGER_GROUPS[skillName].every((group) =>
     group.some((term) => normalizedPrompt.includes(term))
   );
 }
