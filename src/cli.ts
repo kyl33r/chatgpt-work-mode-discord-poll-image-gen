@@ -23,6 +23,10 @@ import { resolveDiscordChannel } from "./config/resolve-discord-channel.js";
 import type { ClipboardImageSource } from "./clipboard/clipboard-image-source.js";
 import { MacOsClipboardImageSource } from "./clipboard/macos-clipboard-image-source.js";
 import {
+  FeedbackAcquisitionEvaluationRecorder,
+  LocalFeedbackAcquisitionEvaluationSink
+} from "./evaluation/feedback-acquisition-evaluation.js";
+import {
   collectMessages,
   MessageCollectionAmbiguityError,
   planFeedbackCaptures,
@@ -52,6 +56,7 @@ export interface CommandDependencies {
   allowlist: DiscordChannelAllowlistStore;
   artifacts?: RoundArtifactStore;
   clipboard?: ClipboardImageSource;
+  evaluation?: FeedbackAcquisitionEvaluationRecorder;
   workflowLock: WorkflowLock;
 }
 
@@ -69,7 +74,8 @@ export async function executeCommand(
       store,
       allowedChannelUrl,
       dependencies.artifacts,
-      dependencies.clipboard
+      dependencies.clipboard,
+      dependencies.evaluation
     );
   });
 }
@@ -80,7 +86,8 @@ async function executeLockedCommand(
   store: RoundStateStore,
   allowedChannelUrl: string,
   artifacts: RoundArtifactStore | undefined,
-  clipboard: ClipboardImageSource | undefined
+  clipboard: ClipboardImageSource | undefined,
+  evaluation: FeedbackAcquisitionEvaluationRecorder | undefined
 ): Promise<unknown> {
   await assertAllowedChannel(command, payload, store, allowedChannelUrl);
   if (command === "prepare-base-submission") {
@@ -119,14 +126,16 @@ async function executeLockedCommand(
     return new FeedbackImageAcquirer(
       store,
       requireClipboardImageSource(clipboard),
-      requireArtifactStore(artifacts)
+      requireArtifactStore(artifacts),
+      evaluation
     ).prepare(parseFeedbackImageCapturePayload(payload));
   }
   if (command === "capture-feedback-image") {
     return new FeedbackImageAcquirer(
       store,
       requireClipboardImageSource(clipboard),
-      requireArtifactStore(artifacts)
+      requireArtifactStore(artifacts),
+      evaluation
     ).capture(parseFeedbackImageCapturePayload(payload));
   }
   if (command === "prepare-prompt-synthesis") {
@@ -1066,6 +1075,10 @@ async function main(): Promise<void> {
       allowlist: new JsonDiscordChannelAllowlistStore(DISCORD_CHANNEL_ALLOWLIST_PATH),
       artifacts: new JsonRoundArtifactStore(ROUND_STATE_ROOT),
       clipboard: new MacOsClipboardImageSource(),
+      evaluation: new FeedbackAcquisitionEvaluationRecorder(
+        { now: () => performance.now() },
+        new LocalFeedbackAcquisitionEvaluationSink()
+      ),
       workflowLock: new FileWorkflowLock(WORKFLOW_LOCK_PATH)
     }
   );

@@ -37,6 +37,80 @@ export const ROUND_FEEDBACK_IMAGE_FILENAME_PATTERN =
   /^message-[1-9]\d*-attachment-\d+\.(?:png|jpe?g|webp)$/;
 export const PRIVATE_FILE_MODE = 0o600;
 export const PRIVATE_DIRECTORY_MODE = 0o700;
+export const FEEDBACK_ACQUISITION_EVALUATION_SCHEMA_VERSION = 1;
+export const FEEDBACK_ACQUISITION_EVALUATION_REPORT_ROOT = join(
+  ".runtime",
+  "evaluations",
+  "clipboard-feedback-acquisition"
+);
+export const FEEDBACK_ACQUISITION_EVALUATION_FILE_PREFIX = "evaluation-";
+export const FEEDBACK_ACQUISITION_EVALUATION_FILE_EXTENSION = ".json";
+export const FEEDBACK_ACQUISITION_EVALUATION_FILE_ATTEMPT_LIMIT = 999_999;
+export const FEEDBACK_ACQUISITION_EVALUATION_PHASES = [
+  "preparation",
+  "browser-action",
+  "clipboard-read-decode",
+  "artifact-validation-install",
+  "collection-handoff"
+] as const;
+export const FEEDBACK_ACQUISITION_EVALUATION_COMPLETIONS = [
+  "complete",
+  "incomplete"
+] as const;
+export const FEEDBACK_ACQUISITION_EVALUATION_CORRECTNESS_VALUES = [
+  "verified",
+  "unverifiable",
+  "incorrect"
+] as const;
+export const FEEDBACK_ACQUISITION_EVALUATION_RECOVERIES = [
+  "automatic",
+  "resume",
+  "needs-attention",
+  "terminal"
+] as const;
+export const FEEDBACK_ACQUISITION_EVALUATION_INTERRUPTION_BOUNDARIES = [
+  "none",
+  "before-intent",
+  "after-intent-before-copy",
+  "after-copy-before-capture",
+  "during-staging",
+  "after-install-before-receipt",
+  "after-receipt-before-collection",
+  "after-collection"
+] as const;
+export const FEEDBACK_ACQUISITION_EVALUATION_SCENARIO_CODES = [
+  "single-valid-image",
+  "multiple-valid-images",
+  "unsupported-or-excess-attachments",
+  "clipboard-unchanged",
+  "clipboard-over-advanced",
+  "clipboard-unreadable",
+  "clipboard-empty",
+  "clipboard-multiple-images",
+  "browser-copy-control-missing",
+  "visible-attachment-ambiguous",
+  "selection-order-changed",
+  "interrupted-before-intent",
+  "interrupted-after-intent-before-copy",
+  "interrupted-after-copy-before-capture",
+  "interrupted-during-staging",
+  "interrupted-after-install-before-receipt",
+  "interrupted-after-receipt-before-collection",
+  "interrupted-after-collection",
+  "restart-selected",
+  "restart-unresolved-intent",
+  "restart-accepted-artifact",
+  "restart-collected-batch",
+  "artifact-missing",
+  "artifact-corrupt",
+  "artifact-symlinked",
+  "artifact-aliased",
+  "artifact-outside-capsule",
+  "artifact-pre-existing",
+  "host-unsupported",
+  "pasteboard-unavailable",
+  "browser-download-baseline"
+] as const;
 export const BASE_IMAGE_STAGING_ROOT = ROUND_STATE_ROOT;
 export const RESULT_IMAGE_STAGING_ROOT = ROUND_STATE_ROOT;
 export const LEGACY_SHARED_ROUND_STATE_PATH = join(STATE_ROOT, "rounds.json");

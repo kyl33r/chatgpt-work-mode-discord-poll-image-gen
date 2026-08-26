@@ -9,6 +9,10 @@ import type { ClipboardImageSource } from "../src/clipboard/clipboard-image-sour
 import { PARTICIPANT_REFERENCE_INSTRUCTION } from "../src/constants.js";
 import { executeCommand as executeRoundCommand } from "../src/cli.js";
 import {
+  FeedbackAcquisitionEvaluationRecorder,
+  type FeedbackAcquisitionEvaluationRecord
+} from "../src/evaluation/feedback-acquisition-evaluation.js";
+import {
   JsonRoundArtifactStore,
   type RoundArtifactStore
 } from "../src/round/round-artifact-store.js";
@@ -35,6 +39,19 @@ describe("round CLI lifecycle", () => {
     const baseImagePath = await realpath(requestedBaseImagePath);
     const artifacts = new FakeClipboardArtifacts();
     const clipboard = new SequencedClipboardImageSource();
+    const evaluationRecords: FeedbackAcquisitionEvaluationRecord[] = [];
+    const evaluation = new FeedbackAcquisitionEvaluationRecorder(
+      new SequenceMonotonicClock([
+        0, 1, 2, 3, 4, 5,
+        10, 11, 12, 13, 14, 15
+      ]),
+      {
+        write: async (record) => {
+          evaluationRecords.push(record);
+          return true;
+        }
+      }
+    );
     const boundaryMessageUrl = "https://discord.test/messages/base";
     const messages = Array.from({ length: 5 }, (_, index) => ({
       kind: "ordinary-text" as const,
@@ -83,9 +100,29 @@ describe("round CLI lifecycle", () => {
         "capture-feedback-image",
         { roundId: "RCLIP", messageOrdinal, attachmentIndex },
         store,
-        { artifacts, clipboard }
+        { artifacts, clipboard, evaluation }
       )).resolves.toEqual({ action: "captured" });
     }
+    expect(evaluationRecords).toHaveLength(2);
+    expect(evaluationRecords.map((record) => ({
+      scenarioCode: record.scenarioCode,
+      acceptedArtifactCount: record.acceptedArtifactCount,
+      browserCopyActionCount: record.browserCopyActionCount,
+      recovery: record.recovery
+    }))).toEqual([
+      {
+        scenarioCode: "multiple-valid-images",
+        acceptedArtifactCount: 1,
+        browserCopyActionCount: 1,
+        recovery: "automatic"
+      },
+      {
+        scenarioCode: "multiple-valid-images",
+        acceptedArtifactCount: 2,
+        browserCopyActionCount: 1,
+        recovery: "automatic"
+      }
+    ]);
 
     await expect(runCommand(
       "collect-messages",
@@ -289,7 +326,11 @@ function runCommand(
   command: string,
   payload: unknown,
   store: JsonRoundStateStore,
-  options: { artifacts?: RoundArtifactStore; clipboard?: ClipboardImageSource } = {}
+  options: {
+    artifacts?: RoundArtifactStore;
+    clipboard?: ClipboardImageSource;
+    evaluation?: FeedbackAcquisitionEvaluationRecorder;
+  } = {}
 ) {
   return executeRoundCommand(command, payload, store, {
     allowlist: {
@@ -299,6 +340,18 @@ function runCommand(
     workflowLock: new InMemoryWorkflowLock(),
     ...options
   });
+}
+
+class SequenceMonotonicClock {
+  public constructor(private readonly readings: number[]) {}
+
+  public now(): number {
+    const reading = this.readings.shift();
+    if (reading === undefined) {
+      throw new Error("No monotonic clock reading remains.");
+    }
+    return reading;
+  }
 }
 
 class SequencedClipboardImageSource implements ClipboardImageSource {

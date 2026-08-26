@@ -112,7 +112,7 @@ describe("MacOsClipboardImageSource", () => {
   });
 
   it.runIf(process.platform === "darwin")(
-    "reads a generated image from an isolated named pasteboard",
+    "canonicalizes a TIFF-only image from an isolated named pasteboard",
     async () => {
       const directory = await mkdtemp(join(tmpdir(), "clipboard-adapter-integration-"));
       const writerPath = join(directory, "write-test-pasteboard.swift");
@@ -246,10 +246,8 @@ while let command = readLine() {
     bytes[1] = 34
     bytes[2] = 56
     bytes[3] = 255
-    let png = bitmap.representation(using: .png, properties: [:])!
     let tiff = bitmap.representation(using: .tiff, properties: [:])!
     let item = NSPasteboardItem()
-    item.setData(png, forType: .png)
     item.setData(tiff, forType: .tiff)
     pasteboard.clearContents()
     guard pasteboard.writeObjects([item]) else { exit(3) }

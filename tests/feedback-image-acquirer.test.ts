@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { ClipboardImageSource } from "../src/clipboard/clipboard-image-source.js";
+import { ClipboardImageSourceError } from "../src/clipboard/macos-clipboard-image-source.js";
+import {
+  FeedbackAcquisitionEvaluationRecorder,
+  type FeedbackAcquisitionEvaluationRecord
+} from "../src/evaluation/feedback-acquisition-evaluation.js";
 import { FeedbackImageAcquirer } from "../src/round/feedback-image-acquirer.js";
 import { applyRoundEvent, createRound } from "../src/round/round-state.js";
 import type { RoundState } from "../src/round/round-state.js";
@@ -56,6 +61,203 @@ describe("FeedbackImageAcquirer", () => {
         messages: [{ selectedAttachments: [{ status: "accepted", imagePath: "accepted-artifact" }] }]
       }
     });
+  });
+
+  it("records sanitized capture measurements without changing the production result", async () => {
+    const records: FeedbackAcquisitionEvaluationRecord[] = [];
+    const evaluation = new FeedbackAcquisitionEvaluationRecorder(
+      new FakeMonotonicClock([0, 1, 3, 4, 7, 8]),
+      { write: async (record) => { records.push(record); return true; } }
+    );
+    const acquirer = new FeedbackImageAcquirer(
+      new InMemoryRoundStateStore(intentRecordedRound("REVAL")),
+      new FakeClipboardImageSource(41, {
+        observedChangeCount: 42,
+        pngBytes: new Uint8Array([1])
+      }),
+      new FakeArtifactStore("accepted-artifact"),
+      evaluation
+    );
+
+    await expect(acquirer.capture({
+      roundId: "REVAL",
+      messageOrdinal: 1,
+      attachmentIndex: 0
+    })).resolves.toEqual({ action: "captured" });
+    expect(records).toEqual([expect.objectContaining({
+      scenarioCode: "single-valid-image",
+      completion: "complete",
+      correctness: "verified",
+      expectedSelectedImageCount: 1,
+      acceptedArtifactCount: 1,
+      successfulFullDecodeCount: 1,
+      acceptedOrderMatched: true,
+      phaseDurationsMs: {
+        preparation: 0,
+        "browser-action": 0,
+        "clipboard-read-decode": 2,
+        "artifact-validation-install": 3,
+        "collection-handoff": 0,
+        total: 8
+      },
+      browserCopyActionCount: 1,
+      otherBrowserAcquisitionActionCount: 0,
+      restartCount: 0,
+      cleanResume: false,
+      manualInterventionRequired: false,
+      interruptionBoundary: "none",
+      duplicateArtifactCount: 0,
+      skippedArtifactCount: 0,
+      reorderedArtifactCount: 0,
+      recovery: "automatic"
+    })]);
+  });
+
+  it("records controlled recovery classifications for clipboard ambiguity and restart", async () => {
+    const records: FeedbackAcquisitionEvaluationRecord[] = [];
+    const sink = { write: async (record: FeedbackAcquisitionEvaluationRecord) => {
+      records.push(record);
+      return true;
+    } };
+    const ambiguous = new FeedbackImageAcquirer(
+      new InMemoryRoundStateStore(intentRecordedRound("EAMBIG")),
+      new FakeClipboardImageSource(
+        41,
+        undefined,
+        new ClipboardImageSourceError("no-image")
+      ),
+      unusedArtifacts(),
+      new FeedbackAcquisitionEvaluationRecorder(
+        new FakeMonotonicClock([0, 1, 2, 3]),
+        sink
+      )
+    );
+    await expect(ambiguous.capture({
+      roundId: "EAMBIG",
+      messageOrdinal: 1,
+      attachmentIndex: 0
+    })).resolves.toMatchObject({ action: "needs-attention" });
+
+    const unresolved = new FeedbackImageAcquirer(
+      new InMemoryRoundStateStore(intentRecordedRound("EINTENT")),
+      new FakeClipboardImageSource(41),
+      unusedArtifacts(),
+      new FeedbackAcquisitionEvaluationRecorder(new FakeMonotonicClock([0, 1]), sink)
+    );
+    await unresolved.prepare({ roundId: "EINTENT", messageOrdinal: 1, attachmentIndex: 0 });
+
+    const resumed = new FeedbackImageAcquirer(
+      new InMemoryRoundStateStore(acceptedRound("ERESUME")),
+      new FakeClipboardImageSource(41),
+      unusedArtifacts(),
+      new FeedbackAcquisitionEvaluationRecorder(new FakeMonotonicClock([0, 0, 0, 1]), sink)
+    );
+    await resumed.prepare({ roundId: "ERESUME", messageOrdinal: 1, attachmentIndex: 0 });
+
+    expect(records.map((record) => ({
+      scenarioCode: record.scenarioCode,
+      completion: record.completion,
+      browserCopyActionCount: record.browserCopyActionCount,
+      restartCount: record.restartCount,
+      manualInterventionRequired: record.manualInterventionRequired,
+      interruptionBoundary: record.interruptionBoundary,
+      recovery: record.recovery
+    }))).toEqual([
+      {
+        scenarioCode: "clipboard-empty",
+        completion: "incomplete",
+        browserCopyActionCount: 1,
+        restartCount: 0,
+        manualInterventionRequired: true,
+        interruptionBoundary: "after-copy-before-capture",
+        recovery: "needs-attention"
+      },
+      {
+        scenarioCode: "restart-unresolved-intent",
+        completion: "incomplete",
+        browserCopyActionCount: 0,
+        restartCount: 1,
+        manualInterventionRequired: true,
+        interruptionBoundary: "after-intent-before-copy",
+        recovery: "needs-attention"
+      },
+      {
+        scenarioCode: "restart-accepted-artifact",
+        completion: "complete",
+        browserCopyActionCount: 0,
+        restartCount: 1,
+        manualInterventionRequired: false,
+        interruptionBoundary: "after-receipt-before-collection",
+        recovery: "resume"
+      }
+    ]);
+  });
+
+  it("measures preparation and classifies an unsupported host as terminal", async () => {
+    const records: FeedbackAcquisitionEvaluationRecord[] = [];
+    const sink = { write: async (record: FeedbackAcquisitionEvaluationRecord) => {
+      records.push(record);
+      return true;
+    } };
+    const prepared = new FeedbackImageAcquirer(
+      new InMemoryRoundStateStore(plannedRound("EPREP")),
+      new FakeClipboardImageSource(41),
+      unusedArtifacts(),
+      new FeedbackAcquisitionEvaluationRecorder(
+        new FakeMonotonicClock([0, 1, 3, 4]),
+        sink
+      )
+    );
+    await expect(prepared.prepare({
+      roundId: "EPREP",
+      messageOrdinal: 1,
+      attachmentIndex: 0
+    })).resolves.toEqual({ action: "copy-visible-image" });
+
+    const unsupportedClipboard: ClipboardImageSource = {
+      getChangeCount: async () => { throw new ClipboardImageSourceError("unsupported-platform"); },
+      readSingleImage: async () => { throw new Error("unused"); }
+    };
+    const unsupported = new FeedbackImageAcquirer(
+      new InMemoryRoundStateStore(plannedRound("EHOST")),
+      unsupportedClipboard,
+      unusedArtifacts(),
+      new FeedbackAcquisitionEvaluationRecorder(
+        new FakeMonotonicClock([0, 1, 2, 3]),
+        sink
+      )
+    );
+    await expect(unsupported.prepare({
+      roundId: "EHOST",
+      messageOrdinal: 1,
+      attachmentIndex: 0
+    })).resolves.toMatchObject({ action: "needs-attention" });
+
+    expect(records.map((record) => ({
+      scenarioCode: record.scenarioCode,
+      completion: record.completion,
+      preparationMs: record.phaseDurationsMs.preparation,
+      browserCopyActionCount: record.browserCopyActionCount,
+      manualInterventionRequired: record.manualInterventionRequired,
+      recovery: record.recovery
+    }))).toEqual([
+      {
+        scenarioCode: "single-valid-image",
+        completion: "incomplete",
+        preparationMs: 2,
+        browserCopyActionCount: 0,
+        manualInterventionRequired: false,
+        recovery: "automatic"
+      },
+      {
+        scenarioCode: "host-unsupported",
+        completion: "incomplete",
+        preparationMs: 1,
+        browserCopyActionCount: 0,
+        manualInterventionRequired: false,
+        recovery: "terminal"
+      }
+    ]);
   });
 
   it.each([
@@ -203,6 +405,18 @@ class FakeClipboardImageSource implements ClipboardImageSource {
       throw new Error("clipboard image unavailable");
     }
     return this.image;
+  }
+}
+
+class FakeMonotonicClock {
+  public constructor(private readonly readings: number[]) {}
+
+  public now(): number {
+    const reading = this.readings.shift();
+    if (reading === undefined) {
+      throw new Error("No monotonic clock reading remains.");
+    }
+    return reading;
   }
 }
 
