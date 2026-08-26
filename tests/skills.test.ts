@@ -56,10 +56,17 @@ describe("project skills", () => {
   });
 
   it("routes a bounded allowlisted conversation observation only to the observer", () => {
-    const prompt = "Scan the allowlisted Discord conversation messages after this boundary.";
+    const prompt = "Observe the allowlisted Discord conversation messages after this boundary.";
 
     expect(matchesSkillPrompt("observe-discord-conversation", prompt)).toBe(true);
     expect(matchesSkillPrompt("get-discord-polls", prompt)).toBe(false);
+  });
+
+  it("continues to route ordinary round-message collection to get-discord-polls", () => {
+    const prompt = "Collect round messages in Discord.";
+
+    expect(matchesSkillPrompt("get-discord-polls", prompt)).toBe(true);
+    expect(matchesSkillPrompt("observe-discord-conversation", prompt)).toBe(false);
   });
 
   it.each([

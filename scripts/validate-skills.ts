@@ -40,14 +40,10 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
     ["round", "discord"]
   ],
   "discord-image-paste": [["paste", "attach", "upload"], ["discord"], ["image", "clipboard"]],
-  "get-discord-polls": [
-    ["collect", "scan", "close"],
-    ["poll", "feedback"],
-    ["message", "poll", "feedback"]
-  ],
+  "get-discord-polls": [["collect", "scan", "close"], ["message", "poll", "feedback"]],
   "image-gen": [["edit", "generate", "publish"], ["image"], ["feedback", "poll"]],
   "observe-discord-conversation": [
-    ["read", "observe", "scan"],
+    ["read", "observe"],
     ["message", "conversation"],
     ["boundary"],
     ["allowlisted"],
