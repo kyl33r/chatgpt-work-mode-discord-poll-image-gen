@@ -1,8 +1,9 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import sharp from "sharp";
 
 import { executeCommand as executeRoundCommand } from "../src/cli.js";
 import {
@@ -10,7 +11,10 @@ import {
   type RoundArtifactStore
 } from "../src/round/round-artifact-store.js";
 import { applyRoundEvent, createRound } from "../src/round/round-state.js";
-import { JsonRoundStateStore } from "../src/round/round-state-store.js";
+import {
+  JsonRoundStateStore,
+  type RoundStateStore
+} from "../src/round/round-state-store.js";
 import { InMemoryWorkflowLock } from "../src/workflow-lock.js";
 
 const temporaryDirectories: string[] = [];
@@ -118,6 +122,196 @@ describe("executeCommand", () => {
         { artifacts: new JsonRoundArtifactStore(roundsRoot) }
       )
     ).rejects.toThrow("The round channel is derived from the configured Discord allowlist.");
+  });
+
+  it("continues from the most recently completed successful round in the channel", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "feedback-round-cli-"));
+    temporaryDirectories.push(directory);
+    const roundsRoot = join(directory, "rounds");
+    const store = new JsonRoundStateStore(roundsRoot);
+    const olderResult = await validPng(0);
+    const latestResult = await validPng(255);
+    for (const [roundId, startedAt, bytes] of [
+      ["R001", "2026-08-24T10:00:00.000Z", olderResult],
+      ["R002", "2026-08-24T11:00:00.000Z", latestResult]
+    ] as const) {
+      const capsule = join(roundsRoot, roundId);
+      await mkdir(capsule, { recursive: true });
+      const resultImagePath = join(capsule, "result-image.png");
+      await writeFile(resultImagePath, bytes);
+      await store.save({
+        ...createRound({
+          id: roundId,
+          baseImagePath: join(capsule, "base-image.png"),
+          channelUrl: ALLOWED_CHANNEL,
+          messageLimit: 5
+        }),
+        phase: "completed",
+        collectionStartedAt: startedAt,
+        generationOutcome: { kind: "succeeded", resultImagePath },
+        outcomeMessageUrl: `${roundId}-outcome`
+      });
+    }
+
+    const result = await runCommand(
+      "prepare-continuation",
+      { roundId: "R003" },
+      store,
+      { artifacts: new JsonRoundArtifactStore(roundsRoot) }
+    );
+
+    expect(result).toMatchObject({
+      action: "post-base-image",
+      roundId: "R003",
+      caption:
+        "===== POLL START: R003 =====\nThe next 5 non-empty text messages in this channel will be used as image-edit feedback."
+    });
+    const continued = await store.get("R003");
+    expect(continued).toMatchObject({
+      phase: "submitting-base",
+      parentRoundId: "R002",
+      channelUrl: ALLOWED_CHANNEL
+    });
+    expect(await readFile(continued!.baseImagePath)).toEqual(latestResult);
+
+    expect(
+      await runCommand(
+        "confirm-base-submission",
+        {
+          roundId: "R003",
+          baseMessageUrl: "R003-base-message",
+          collectionStartedAt: "2026-08-24T12:00:00.000Z"
+        },
+        store
+      )
+    ).toEqual({ action: "recorded", roundId: "R003", phase: "collecting-messages" });
+  });
+
+  it("rejects caller-selected continuation history", async () => {
+    const store = await createStore();
+
+    await expect(
+      runCommand(
+        "prepare-continuation",
+        { roundId: "RNEW", sourceRoundId: "RINJECTED" },
+        store,
+        { artifacts: new JsonRoundArtifactStore(join(temporaryDirectories.at(-1)!, "rounds")) }
+      )
+    ).rejects.toThrow("Continuation source is selected from completed channel history.");
+  });
+
+  it("does not persist a continuation when the artifact copy fails", async () => {
+    const store = await createStore();
+    await store.save({
+      ...createRound({
+        id: "R001",
+        baseImagePath: "/state/R001/base-image.png",
+        channelUrl: ALLOWED_CHANNEL,
+        messageLimit: 5
+      }),
+      phase: "completed",
+      collectionStartedAt: "2026-08-24T10:00:00.000Z",
+      generationOutcome: { kind: "succeeded", resultImagePath: "/missing/result.png" },
+      outcomeMessageUrl: "R001-outcome"
+    });
+    const artifacts: RoundArtifactStore = {
+      acceptBaseImage: async () => "unused",
+      acceptResultImage: async () => "unused",
+      requireResultImage: async () => "unused",
+      copyResultAsBase: async () => {
+        throw new Error("copy failed");
+      },
+      discardUnpersistedBase: async () => undefined
+    };
+
+    await expect(
+      runCommand("prepare-continuation", { roundId: "R002" }, store, { artifacts })
+    ).rejects.toThrow("copy failed");
+    await expect(store.get("R002")).resolves.toBeUndefined();
+  });
+
+  it("rejects continuation while another round is active", async () => {
+    const store = await createStore();
+    await store.save(
+      createRound({
+        id: "RACTIVE",
+        baseImagePath: "/state/RACTIVE/base-image.png",
+        channelUrl: ALLOWED_CHANNEL,
+        messageLimit: 5
+      })
+    );
+
+    await expect(
+      runCommand("prepare-continuation", { roundId: "RNEW" }, store, {
+        artifacts: new JsonRoundArtifactStore(join(temporaryDirectories.at(-1)!, "rounds"))
+      })
+    ).rejects.toThrow("An active round already exists: RACTIVE");
+  });
+
+  it("rejects continuation when history has no eligible same-channel success", async () => {
+    const store = await createStore();
+    await store.save({
+      ...createRound({
+        id: "RREFUSED",
+        baseImagePath: "/state/RREFUSED/base-image.png",
+        channelUrl: ALLOWED_CHANNEL,
+        messageLimit: 5
+      }),
+      phase: "completed",
+      collectionStartedAt: "2026-08-24T10:00:00.000Z",
+      generationOutcome: { kind: "refused" },
+      outcomeMessageUrl: "refused-outcome"
+    });
+
+    await expect(
+      runCommand("prepare-continuation", { roundId: "RNEW" }, store, {
+        artifacts: new JsonRoundArtifactStore(join(temporaryDirectories.at(-1)!, "rounds"))
+      })
+    ).rejects.toThrow("No completed successful round is available in the configured channel.");
+  });
+
+  it("removes an unpersisted copied Base Image so a save failure can be retried", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "feedback-round-cli-retry-"));
+    temporaryDirectories.push(directory);
+    const roundsRoot = join(directory, "rounds");
+    const backingStore = new JsonRoundStateStore(roundsRoot);
+    const sourceCapsule = join(roundsRoot, "R001");
+    await mkdir(sourceCapsule, { recursive: true });
+    const resultImagePath = join(sourceCapsule, "result-image.png");
+    await writeFile(resultImagePath, await validPng());
+    await backingStore.save({
+      ...createRound({
+        id: "R001",
+        baseImagePath: join(sourceCapsule, "base-image.png"),
+        channelUrl: ALLOWED_CHANNEL,
+        messageLimit: 5
+      }),
+      phase: "completed",
+      collectionStartedAt: "2026-08-24T10:00:00.000Z",
+      generationOutcome: { kind: "succeeded", resultImagePath },
+      outcomeMessageUrl: "outcome"
+    });
+    let failNextTargetSave = true;
+    const store: RoundStateStore = {
+      get: (roundId) => backingStore.get(roundId),
+      list: () => backingStore.list(),
+      save: async (round) => {
+        if (round.id === "R002" && failNextTargetSave) {
+          failNextTargetSave = false;
+          throw new Error("save failed");
+        }
+        await backingStore.save(round);
+      }
+    };
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+
+    await expect(
+      runCommand("prepare-continuation", { roundId: "R002" }, store, { artifacts })
+    ).rejects.toThrow("save failed");
+    await expect(access(join(roundsRoot, "R002"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      runCommand("prepare-continuation", { roundId: "R002" }, store, { artifacts })
+    ).resolves.toMatchObject({ action: "post-base-image", roundId: "R002" });
   });
 
   it("waits for five messages, deduplicates rescans, then freezes and closes", async () => {
@@ -493,7 +687,7 @@ async function createStore(): Promise<JsonRoundStateStore> {
 function runCommand(
   command: string,
   payload: unknown,
-  store: JsonRoundStateStore,
+  store: RoundStateStore,
   options: { artifacts?: RoundArtifactStore } = {}
 ) {
   return executeRoundCommand(command, payload, store, {
@@ -504,4 +698,10 @@ function runCommand(
     workflowLock: new InMemoryWorkflowLock(),
     ...options
   });
+}
+
+function validPng(red = 0): Promise<Buffer> {
+  return sharp({
+    create: { width: 1, height: 1, channels: 4, background: { r: red, g: 0, b: 0, alpha: 1 } }
+  }).png().toBuffer();
 }

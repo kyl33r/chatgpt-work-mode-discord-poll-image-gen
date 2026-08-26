@@ -4,7 +4,11 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { migrateSharedRoundState } from "../src/round/state-migration.js";
+import {
+  migrateIsolatedRoundCapsulesV4ToV5,
+  migrateRoundState,
+  migrateSharedRoundState
+} from "../src/round/state-migration.js";
 import { createRound } from "../src/round/round-state.js";
 import { JsonRoundStateStore } from "../src/round/round-state-store.js";
 
@@ -15,7 +19,7 @@ afterEach(async () => {
 });
 
 describe("migrateSharedRoundState", () => {
-  it("moves the supported shared v3 round into one isolated v4 capsule", async () => {
+  it("moves the supported shared v3 round into one current isolated capsule", async () => {
     const paths = await createMigrationFixture();
 
     expect(await migrateSharedRoundState(paths)).toEqual({
@@ -27,7 +31,7 @@ describe("migrateSharedRoundState", () => {
     const capsule = join(paths.roundsRoot, "R001");
     const migrated = JSON.parse(await readFile(join(capsule, "round.json"), "utf8"));
     expect(migrated).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       id: "R001",
       phase: "synthesizing-feedback",
       messageLimit: 5
@@ -137,6 +141,134 @@ describe("migrateSharedRoundState", () => {
     await expect(migrateSharedRoundState(paths)).rejects.toThrow(
       "Existing Round State Capsule does not match the shared round."
     );
+  });
+});
+
+describe("migrateIsolatedRoundCapsulesV4ToV5", () => {
+  it("upgrades an isolated v4 capsule without inventing parent lineage", async () => {
+    const root = await mkdtemp(join(tmpdir(), "feedback-round-v5-migration-"));
+    temporaryDirectories.push(root);
+    const roundsRoot = join(root, "rounds");
+    const capsule = join(roundsRoot, "R001");
+    await mkdir(capsule, { recursive: true });
+    const legacy = {
+      schemaVersion: 4,
+      id: "R001",
+      phase: "stopped",
+      baseImagePath: join(capsule, "base-image.png"),
+      channelUrl: "https://discord.test/channels/one",
+      messageLimit: 5,
+      capturedMessages: []
+    };
+    await writeFile(join(capsule, "round.json"), `${JSON.stringify(legacy, null, 2)}\n`);
+
+    await expect(migrateIsolatedRoundCapsulesV4ToV5(roundsRoot)).resolves.toEqual({
+      migratedRoundCount: 1
+    });
+    const migrated = JSON.parse(await readFile(join(capsule, "round.json"), "utf8"));
+    expect(migrated).toEqual({ ...legacy, schemaVersion: 5 });
+    expect(migrated).not.toHaveProperty("parentRoundId");
+    await expect(readFile(join(capsule, "migrations", "round-v4.json"), "utf8"))
+      .resolves.toBe(`${JSON.stringify(legacy, null, 2)}\n`);
+  });
+
+  it("is orchestrated even when no legacy shared state exists", async () => {
+    const root = await mkdtemp(join(tmpdir(), "feedback-round-v5-orchestrator-"));
+    temporaryDirectories.push(root);
+    const stateRoot = join(root, ".state");
+    const roundsRoot = join(stateRoot, "rounds");
+    const capsule = join(roundsRoot, "R001");
+    await mkdir(capsule, { recursive: true });
+    await writeFile(
+      join(capsule, "round.json"),
+      `${JSON.stringify({
+        schemaVersion: 4,
+        id: "R001",
+        phase: "stopped",
+        baseImagePath: join(capsule, "base-image.png"),
+        channelUrl: "https://discord.test/channels/one",
+        messageLimit: 5,
+        capturedMessages: []
+      })}\n`
+    );
+
+    await expect(
+      migrateRoundState({
+        legacyStatePath: join(stateRoot, "rounds.json"),
+        legacyBaseImageRoot: join(stateRoot, "base-images"),
+        legacyMigrationRoot: join(stateRoot, "migrations"),
+        roundsRoot
+      })
+    ).resolves.toEqual({ isolated: { migratedRoundCount: 1 } });
+    expect(JSON.parse(await readFile(join(capsule, "round.json"), "utf8")).schemaVersion).toBe(5);
+  });
+
+  it("rejects malformed current-version state instead of skipping validation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "feedback-round-v5-malformed-"));
+    temporaryDirectories.push(root);
+    const capsule = join(root, "rounds", "R001");
+    await mkdir(capsule, { recursive: true });
+    await writeFile(
+      join(capsule, "round.json"),
+      JSON.stringify({ schemaVersion: 5, id: "R001", unexpected: true })
+    );
+
+    await expect(migrateIsolatedRoundCapsulesV4ToV5(join(root, "rounds"))).rejects.toThrow(
+      "Isolated round state is not a supported schema-four or schema-five capsule."
+    );
+  });
+
+  it("rejects a migrations-directory symlink without writing outside the capsule", async () => {
+    const root = await mkdtemp(join(tmpdir(), "feedback-round-v5-migrations-link-"));
+    temporaryDirectories.push(root);
+    const roundsRoot = join(root, "rounds");
+    const capsule = join(roundsRoot, "R001");
+    const outside = join(root, "outside");
+    await mkdir(capsule, { recursive: true });
+    await mkdir(outside);
+    await writeFile(
+      join(capsule, "round.json"),
+      `${JSON.stringify({
+        schemaVersion: 4,
+        id: "R001",
+        phase: "stopped",
+        baseImagePath: join(capsule, "base-image.png"),
+        channelUrl: "https://discord.test/channels/one",
+        messageLimit: 5,
+        capturedMessages: []
+      })}\n`
+    );
+    await symlink(outside, join(capsule, "migrations"));
+
+    await expect(migrateIsolatedRoundCapsulesV4ToV5(roundsRoot)).rejects.toThrow(
+      "Isolated round state is not a supported schema-four or schema-five capsule."
+    );
+    await expect(access(join(outside, "round-v4.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("resumes when a durable v4 backup exists but round state is still v4", async () => {
+    const root = await mkdtemp(join(tmpdir(), "feedback-round-v5-resume-"));
+    temporaryDirectories.push(root);
+    const roundsRoot = join(root, "rounds");
+    const capsule = join(roundsRoot, "R001");
+    const migrations = join(capsule, "migrations");
+    await mkdir(migrations, { recursive: true });
+    const legacyContents = `${JSON.stringify({
+      schemaVersion: 4,
+      id: "R001",
+      phase: "stopped",
+      baseImagePath: join(capsule, "base-image.png"),
+      channelUrl: "https://discord.test/channels/one",
+      messageLimit: 5,
+      capturedMessages: []
+    }, null, 2)}\n`;
+    await writeFile(join(capsule, "round.json"), legacyContents);
+    await writeFile(join(migrations, "round-v4.json"), legacyContents);
+
+    await expect(migrateIsolatedRoundCapsulesV4ToV5(roundsRoot)).resolves.toEqual({
+      migratedRoundCount: 1
+    });
+    expect(JSON.parse(await readFile(join(capsule, "round.json"), "utf8")).schemaVersion).toBe(5);
   });
 });
 

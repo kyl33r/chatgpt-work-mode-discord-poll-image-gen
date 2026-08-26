@@ -29,6 +29,7 @@ Canonical skill source lives under:
 ```text
 skills/
 ├── configure-discord-channel/
+├── continue-from-result/
 ├── discord-image-paste/
 ├── round-start/
 ├── submit-base-image/
@@ -49,7 +50,7 @@ Skills are supervised workflows, not background listeners. `$round-start` keeps 
 5. Attempt one Base Image edit here using that exact persisted prompt.
 6. Post and visibly confirm one Result Image or sanitized refusal/failure status without duplicating side effects.
 
-Participant reference images, native voting, and subsequent edit rounds are deferred until this path is proven.
+Use `$continue-from-result` to start a new isolated round from the Result Image of the most recently completed successful round in the allowlisted channel. Participant reference images and native voting remain deferred until their separate path is proven.
 
 ## Local state
 

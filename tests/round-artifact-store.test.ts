@@ -1,8 +1,9 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import sharp from "sharp";
 
 import { JsonRoundArtifactStore } from "../src/round/round-artifact-store.js";
 
@@ -13,6 +14,130 @@ afterEach(async () => {
 });
 
 describe("JsonRoundArtifactStore", () => {
+  it("copies one source Result Image into a distinct target Base Image", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const sourceCapsule = join(roundsRoot, "R001");
+    const targetCapsule = join(roundsRoot, "R002");
+    await mkdir(sourceCapsule, { recursive: true });
+    const source = join(sourceCapsule, "result-image.png");
+    await writeFile(source, await validPng());
+
+    const copied = await new JsonRoundArtifactStore(roundsRoot).copyResultAsBase(
+      "R001",
+      "R002",
+      source
+    );
+
+    expect(copied).toBe(join(targetCapsule, "base-image.png"));
+    expect(await readFile(copied)).toEqual(await readFile(source));
+    expect((await stat(copied)).mode & 0o777).toBe(0o600);
+    expect(copied).not.toBe(source);
+  });
+
+  it("rejects missing and unsupported continuation sources", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const sourceCapsule = join(roundsRoot, "R001");
+    await mkdir(sourceCapsule, { recursive: true });
+    const unsupported = join(sourceCapsule, "result-image.gif");
+    await writeFile(unsupported, "gif", "utf8");
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+
+    await expect(
+      artifacts.copyResultAsBase("R001", "R002", join(sourceCapsule, "missing.png"))
+    ).rejects.toThrow("Recorded result image is missing or unsupported.");
+    await expect(
+      artifacts.copyResultAsBase("R001", "R002", unsupported)
+    ).rejects.toThrow("Recorded result image is missing or unsupported.");
+  });
+
+  it("rejects a corrupt Result Image before it can seed a continuation round", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const sourceCapsule = join(roundsRoot, "R001");
+    await mkdir(sourceCapsule, { recursive: true });
+    const corruptSource = join(sourceCapsule, "result-image.png");
+    await writeFile(corruptSource, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).copyResultAsBase(
+        "R001",
+        "R002",
+        corruptSource
+      )
+    ).rejects.toThrow("Recorded result image is missing or unsupported.");
+  });
+
+  it("rejects other decodable images in the capsule as the round Result Image", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const capsule = join(roundsRoot, "R001");
+    const nestedDirectory = join(capsule, "feedback-images");
+    await mkdir(nestedDirectory, { recursive: true });
+    const baseImage = join(capsule, "base-image.png");
+    const nestedImage = join(nestedDirectory, "participant.png");
+    const image = await validPng();
+    await Promise.all([writeFile(baseImage, image), writeFile(nestedImage, image)]);
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+
+    await expect(artifacts.requireResultImage("R001", baseImage)).rejects.toThrow(
+      "Recorded result image is missing or unsupported."
+    );
+    await expect(artifacts.requireResultImage("R001", nestedImage)).rejects.toThrow(
+      "Recorded result image is missing or unsupported."
+    );
+  });
+
+  it("never reuses a source capsule or overwrites an existing target capsule", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const sourceCapsule = join(roundsRoot, "R001");
+    await mkdir(sourceCapsule, { recursive: true });
+    const source = join(sourceCapsule, "result-image.png");
+    await writeFile(source, await validPng());
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+
+    await expect(artifacts.copyResultAsBase("R001", "R001", source)).rejects.toThrow(
+      "Continuation source and target rounds must differ."
+    );
+    await mkdir(join(roundsRoot, "R002"));
+    await expect(artifacts.copyResultAsBase("R001", "R002", source)).rejects.toMatchObject({
+      code: "EEXIST"
+    });
+  });
+
+  it("rejects a symlinked continuation target capsule", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const sourceCapsule = join(roundsRoot, "R001");
+    const aliasedCapsule = join(roundsRoot, "R003");
+    await mkdir(sourceCapsule, { recursive: true });
+    await mkdir(aliasedCapsule);
+    const source = join(sourceCapsule, "result-image.png");
+    await writeFile(source, await validPng());
+    await symlink(aliasedCapsule, join(roundsRoot, "R002"));
+
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).copyResultAsBase("R001", "R002", source)
+    ).rejects.toMatchObject({ code: "EEXIST" });
+  });
+
+  it("rejects a Result Image file symlink even within the source capsule", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const sourceCapsule = join(roundsRoot, "R001");
+    await mkdir(sourceCapsule, { recursive: true });
+    const realSource = join(sourceCapsule, "real-result.png");
+    const linkedSource = join(sourceCapsule, "result-image.png");
+    await writeFile(realSource, "source", "utf8");
+    await symlink(realSource, linkedSource);
+
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).copyResultAsBase("R001", "R002", linkedSource)
+    ).rejects.toThrow("Recorded result image is missing or unsupported.");
+  });
+
   it("rejects an in-root capsule symlink to another round", async () => {
     const directory = await temporaryDirectory();
     const roundsRoot = join(directory, "rounds");
@@ -52,4 +177,10 @@ async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "feedback-round-artifacts-"));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+function validPng(): Promise<Buffer> {
+  return sharp({
+    create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } }
+  }).png().toBuffer();
 }

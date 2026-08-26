@@ -101,6 +101,31 @@ describe("JsonRoundStateStore", () => {
       "Unsupported or malformed Round State Capsule."
     );
   });
+
+  it("persists valid parent lineage and rejects unknown lineage fields", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const store = new JsonRoundStateStore(roundsRoot);
+    const continued = createRound({
+      id: "R002",
+      baseImagePath: "/tmp/R002.png",
+      channelUrl: "https://discord.test/channels/one",
+      messageLimit: 5,
+      parentRoundId: "R001"
+    });
+
+    await store.save(continued);
+    await expect(store.get("R002")).resolves.toEqual(continued);
+
+    await writeFile(
+      join(roundsRoot, "R002", "round.json"),
+      JSON.stringify({ ...continued, sourceRoundId: "R001" }),
+      "utf8"
+    );
+    await expect(store.get("R002")).rejects.toThrow(
+      "Unsupported or malformed Round State Capsule."
+    );
+  });
 });
 
 function round(id: string): RoundState {
