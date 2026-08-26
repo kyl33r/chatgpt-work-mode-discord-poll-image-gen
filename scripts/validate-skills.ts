@@ -214,6 +214,9 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
       for (const clipboardContract of [
         'presentationStyle: "attachment"',
         'mimeType: "image/png"',
+        "Focus Text Area",
+        "press `Tab` exactly once",
+        "active element",
         "Meta+V",
         "After `Enter`, never",
         "reset the override"

@@ -21,9 +21,9 @@ Attach exactly one caller-approved image to an already prepared Discord message.
    ```
 
    Match `mimeType` to the verified file type. Never use the adapter's internal snake_case names `mime_type` or `presentation_style`.
-4. Locate exactly one visible Discord message textbox. If Discord's responsive layout keeps the composer outside the actionable viewport, temporarily set a normal desktop viewport, re-locate the textbox, and reset the override when the operation pauses or finishes.
-5. Focus the textbox and press `Meta+V` once. Verify the visible attachment preview before filling the caller's exact caption. Verify both the preview and caption before sending.
+4. Use Discord's documented **Focus Text Area** shortcut as the primary focus path: press `Tab` exactly once. Do not click the composer, use coordinates, or press `Tab` repeatedly. Verify through a read-only page check that the active element is the unique channel message composer: it has `role="textbox"`, `contenteditable="true"`, and an accessible label beginning with `Message `. Do not reject a correctly focused composer only because the browser adapter reports zero-sized geometry. If the active element cannot be verified, stop before pasting. If a temporary desktop viewport override was already applied by the caller, reset the override when the operation pauses or finishes.
+5. With that verified active element still focused, press `Meta+V` once. Verify the visible attachment preview before entering the caller's exact caption through the already focused composer. Do not refocus with a mouse or geometry after the paste. Verify both the preview and caption before sending.
 6. Press `Enter` exactly once. After `Enter`, never paste, fill, press `Enter`, or retry the post automatically—even if link extraction or confirmation times out.
 7. Recover the posted message only from the visible matching Discord message container. Require one stable message identity in the allowlisted channel and return it to the caller without printing it.
 
-If the destination, composer, attachment preview, send result, or message identity is uncertain, stop and let the caller persist `mark-attention`. Never substitute the upload control, another channel, another image, or another caption.
+If the destination, active element, composer, attachment preview, send result, or message identity is uncertain, stop and let the caller persist `mark-attention`. Never substitute the upload control, another channel, another image, another caption, coordinate-based focus, or repeated focus shortcuts.
