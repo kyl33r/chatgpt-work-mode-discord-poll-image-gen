@@ -31,6 +31,7 @@ export interface ConversationParseRequest {
   readonly attachmentLimitPerMessage: number;
   readonly attachmentLimitTotal: number;
   readonly supportedAttachmentMediaTypes: readonly string[];
+  readonly checkpoint?: ConversationCheckpoint;
   readonly observation: ConversationObservationBatch;
 }
 
@@ -87,6 +88,19 @@ export interface ConversationSnapshot {
   readonly selectedAttachments: readonly AttachmentSelection[];
 }
 
+export interface ConversationCheckpoint {
+  readonly destination: ConversationDestination;
+  readonly boundary?: StableMessageIdentity;
+  readonly segmentStart?: StableMessageIdentity;
+  readonly messageLimit: number;
+  readonly attachmentLimitPerMessage: number;
+  readonly attachmentLimitTotal: number;
+  readonly supportedAttachmentMediaTypes: readonly string[];
+  readonly complete: boolean;
+  readonly messages: readonly QualifyingConversationMessage[];
+  readonly selectedAttachments: readonly AttachmentSelection[];
+}
+
 export class ConversationObservationError extends Error {
   public constructor() {
     super("Conversation observation is invalid.");
@@ -115,8 +129,22 @@ export class ConversationSourceError extends Error {
   }
 }
 
+export class ConversationCheckpointError extends Error {
+  public constructor() {
+    super("Conversation checkpoint is invalid.");
+    this.name = "ConversationCheckpointError";
+  }
+}
+
 export function parseConversation(request: ConversationParseRequest): ConversationSnapshot {
-  validateRequest(request);
+  try {
+    validateRequest(request);
+  } catch (error) {
+    if (hasCheckpoint(request) && error instanceof ConversationOrderError) {
+      throw new ConversationCheckpointError();
+    }
+    throw error;
+  }
 
   const messages: QualifyingConversationMessage[] = [];
   const selectedAttachments: AttachmentSelection[] = [];
@@ -158,7 +186,7 @@ export function parseConversation(request: ConversationParseRequest): Conversati
     }
   }
 
-  return {
+  const snapshot: ConversationSnapshot = {
     destination: request.destination,
     ...(request.boundary === undefined ? {} : { boundary: request.boundary }),
     ...(request.observation.coverage.kind === "contiguous-visible-segment"
@@ -168,6 +196,164 @@ export function parseConversation(request: ConversationParseRequest): Conversati
     messages,
     selectedAttachments
   };
+
+  if (request.checkpoint === undefined) {
+    return snapshot;
+  }
+
+  validateCheckpoint(request, snapshot);
+
+  if (request.checkpoint.complete) {
+    return snapshotFromCheckpoint(request.checkpoint);
+  }
+
+  return {
+    ...snapshot,
+    messages: [
+      ...request.checkpoint.messages,
+      ...snapshot.messages.slice(request.checkpoint.messages.length)
+    ],
+    selectedAttachments: [
+      ...request.checkpoint.selectedAttachments,
+      ...snapshot.selectedAttachments.slice(request.checkpoint.selectedAttachments.length)
+    ],
+    complete: snapshot.complete
+  };
+}
+
+function snapshotFromCheckpoint(checkpoint: ConversationCheckpoint): ConversationSnapshot {
+  return {
+    destination: checkpoint.destination,
+    ...(checkpoint.boundary === undefined ? {} : { boundary: checkpoint.boundary }),
+    ...(checkpoint.segmentStart === undefined ? {} : { segmentStart: checkpoint.segmentStart }),
+    complete: checkpoint.complete,
+    messages: checkpoint.messages,
+    selectedAttachments: checkpoint.selectedAttachments
+  };
+}
+
+function validateCheckpoint(
+  request: ConversationParseRequest,
+  snapshot: ConversationSnapshot
+): asserts request is ConversationParseRequest & { readonly checkpoint: ConversationCheckpoint } {
+  const checkpoint = request.checkpoint;
+  if (
+    !isConversationCheckpoint(checkpoint) ||
+    checkpoint.destination !== request.destination ||
+    checkpoint.boundary !== request.boundary ||
+    checkpoint.messageLimit !== request.messageLimit ||
+    checkpoint.attachmentLimitPerMessage !== request.attachmentLimitPerMessage ||
+    checkpoint.attachmentLimitTotal !== request.attachmentLimitTotal ||
+    !hasSameValues(checkpoint.supportedAttachmentMediaTypes, request.supportedAttachmentMediaTypes) ||
+    checkpoint.complete !== (checkpoint.messages.length === request.messageLimit) ||
+    (request.boundary === undefined
+      ? checkpoint.segmentStart !== snapshot.segmentStart
+      : checkpoint.segmentStart !== undefined) ||
+    snapshot.messages.length < checkpoint.messages.length ||
+    snapshot.selectedAttachments.length < checkpoint.selectedAttachments.length
+  ) {
+    throw new ConversationCheckpointError();
+  }
+
+  for (let index = 0; index < checkpoint.messages.length; index += 1) {
+    if (!hasSameMessage(checkpoint.messages[index]!, snapshot.messages[index]!)) {
+      throw new ConversationCheckpointError();
+    }
+  }
+
+  for (let index = 0; index < checkpoint.selectedAttachments.length; index += 1) {
+    if (!hasSameAttachmentSelection(checkpoint.selectedAttachments[index]!, snapshot.selectedAttachments[index]!)) {
+      throw new ConversationCheckpointError();
+    }
+  }
+}
+
+function isConversationCheckpoint(value: unknown): value is ConversationCheckpoint {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      "destination",
+      "boundary",
+      "segmentStart",
+      "messageLimit",
+      "attachmentLimitPerMessage",
+      "attachmentLimitTotal",
+      "supportedAttachmentMediaTypes",
+      "complete",
+      "messages",
+      "selectedAttachments"
+    ]) &&
+    typeof value.destination === "string" &&
+    (value.boundary === undefined || typeof value.boundary === "string") &&
+    (value.segmentStart === undefined || typeof value.segmentStart === "string") &&
+    isPositiveInteger(value.messageLimit) &&
+    isNonNegativeInteger(value.attachmentLimitPerMessage) &&
+    isNonNegativeInteger(value.attachmentLimitTotal) &&
+    isSupportedMediaPolicy(value.supportedAttachmentMediaTypes) &&
+    typeof value.complete === "boolean" &&
+    Array.isArray(value.messages) &&
+    isDenseArray(value.messages) &&
+    value.messages.every(isQualifyingConversationMessage) &&
+    Array.isArray(value.selectedAttachments) &&
+    isDenseArray(value.selectedAttachments) &&
+    value.selectedAttachments.every(isAttachmentSelection)
+  );
+}
+
+function isQualifyingConversationMessage(value: unknown): value is QualifyingConversationMessage {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["identity", "kind", "text", "author", "timestamp"]) &&
+    typeof value.identity === "string" &&
+    value.identity.length > 0 &&
+    value.kind === "ordinary-text" &&
+    typeof value.text === "string" &&
+    value.text.trim().length > 0 &&
+    isConversationAuthor(value.author) &&
+    isVisibleTimestamp(value.timestamp)
+  );
+}
+
+function isAttachmentSelection(value: unknown): value is AttachmentSelection {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["owner", "index", "mediaType", "selection"]) &&
+    typeof value.owner === "string" &&
+    value.owner.length > 0 &&
+    typeof value.index === "number" &&
+    Number.isInteger(value.index) &&
+    value.index >= 0 &&
+    typeof value.mediaType === "string" &&
+    value.mediaType.trim().length > 0 &&
+    typeof value.selection === "string"
+  );
+}
+
+function hasSameValues(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function hasSameMessage(
+  left: QualifyingConversationMessage,
+  right: QualifyingConversationMessage
+): boolean {
+  return (
+    left.identity === right.identity &&
+    left.kind === right.kind &&
+    left.text === right.text &&
+    left.author.id === right.author.id &&
+    left.author.name === right.author.name &&
+    left.timestamp === right.timestamp
+  );
+}
+
+function hasSameAttachmentSelection(left: AttachmentSelection, right: AttachmentSelection): boolean {
+  return (
+    left.owner === right.owner &&
+    left.index === right.index &&
+    left.mediaType === right.mediaType &&
+    left.selection === right.selection
+  );
 }
 
 function isQualifying(observation: ConversationObservation): observation is ConversationObservation & {
@@ -344,6 +530,10 @@ function isConversationAuthor(value: unknown): value is ConversationAuthor {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasCheckpoint(value: unknown): boolean {
+  return isRecord(value) && value.checkpoint !== undefined;
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {

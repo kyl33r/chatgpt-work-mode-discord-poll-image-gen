@@ -5,10 +5,12 @@ import {
   resolveDiscordConversationDestination
 } from "../src/conversation/discord-conversation-destination.js";
 import {
+  type ConversationCheckpoint,
   type ConversationObservationRequest,
   type ConversationObservation,
   type ConversationSource,
   type StableMessageIdentity,
+  ConversationCheckpointError,
   ConversationSourceError,
   parseConversation
 } from "../src/conversation/conversation-parser.js";
@@ -20,6 +22,317 @@ const destination = resolveDiscordConversationDestination(CHANNEL_URL, [CHANNEL_
 const messageIdentity = (value: string): StableMessageIdentity => value as StableMessageIdentity;
 
 describe("parseConversation", () => {
+  it("reuses an exact partial checkpoint prefix before appending later contiguous messages", () => {
+    const initial = parseMessages(
+      [
+        message("ordinary-text", "First observed message", "discord-message:first"),
+        message("ordinary-text", "Second observed message", "discord-message:second")
+      ],
+      { messageLimit: 3 }
+    );
+    const checkpoint = checkpointFrom(initial);
+
+    const resumed = parseConversation({
+      destination,
+      boundary: messageIdentity("discord-message:boundary"),
+      messageLimit: 3,
+      attachmentLimitPerMessage: 2,
+      attachmentLimitTotal: 5,
+      supportedAttachmentMediaTypes: ["image/png"],
+      checkpoint,
+      observation: {
+        destination,
+        boundary: messageIdentity("discord-message:boundary"),
+        coverage: { kind: "contiguous-after-boundary" },
+        messages: [
+          message("ordinary-text", "First observed message", "discord-message:first"),
+          message("ordinary-text", "Second observed message", "discord-message:second"),
+          message("ordinary-text", "Later observed message", "discord-message:third")
+        ]
+      }
+    });
+
+    expect(resumed.messages).toHaveLength(3);
+    expect(resumed.messages[0]).toBe(checkpoint.messages[0]);
+    expect(resumed.messages[1]).toBe(checkpoint.messages[1]);
+    expect(resumed.messages[2]).toMatchObject({ text: "Later observed message" });
+    expect(resumed.complete).toBe(true);
+  });
+
+  it("fails closed when a checkpoint changes the destination", () => {
+    const privateDestination = resolveDiscordConversationDestination(
+      "https://discord.com/channels/123456789012345/345678901234567",
+      ["https://discord.com/channels/123456789012345/345678901234567"]
+    );
+    const checkpoint = checkpointFrom(
+      parseMessages([message("ordinary-text", "First observed message", "discord-message:first")])
+    );
+
+    expectControlledCheckpointError(
+      () =>
+        parseConversation({
+          ...validParseRequest(),
+          checkpoint: { ...checkpoint, destination: privateDestination }
+        }),
+      privateDestination
+    );
+  });
+
+  it("fails closed when a no-boundary checkpoint changes its segment start", () => {
+    const segmentStart = messageIdentity("discord-message:segment-start");
+    const initial = parseConversation({
+      destination,
+      messageLimit: 3,
+      attachmentLimitPerMessage: 2,
+      attachmentLimitTotal: 5,
+      supportedAttachmentMediaTypes: ["image/png"],
+      observation: {
+        destination,
+        coverage: { kind: "contiguous-visible-segment", segmentStart },
+        messages: [message("ordinary-text", "First observed message", "discord-message:segment-start")]
+      }
+    });
+    const privateSegmentStart = messageIdentity("discord-message:changed-segment-start");
+
+    expectControlledCheckpointError(
+      () =>
+        parseConversation({
+          destination,
+          messageLimit: 3,
+          attachmentLimitPerMessage: 2,
+          attachmentLimitTotal: 5,
+          supportedAttachmentMediaTypes: ["image/png"],
+          checkpoint: { ...checkpointFrom(initial), segmentStart: privateSegmentStart },
+          observation: {
+            destination,
+            coverage: { kind: "contiguous-visible-segment", segmentStart },
+            messages: [message("ordinary-text", "First observed message", "discord-message:segment-start")]
+          }
+        }),
+      privateSegmentStart
+    );
+  });
+
+  it("fails closed when a checkpoint rescan collides with a prior identity", () => {
+    const checkpoint = checkpointFrom(
+      parseMessages([message("ordinary-text", "First observed message", "discord-message:first")])
+    );
+    const privateText = "private-conflicting-message";
+
+    expectControlledCheckpointError(
+      () =>
+        parseConversation({
+          destination,
+          boundary: messageIdentity("discord-message:boundary"),
+          messageLimit: 3,
+          attachmentLimitPerMessage: 2,
+          attachmentLimitTotal: 5,
+          supportedAttachmentMediaTypes: ["image/png"],
+          checkpoint,
+          observation: {
+            destination,
+            boundary: messageIdentity("discord-message:boundary"),
+            coverage: { kind: "contiguous-after-boundary" },
+            messages: [
+              message("ordinary-text", "First observed message", "discord-message:first"),
+              message("ordinary-text", privateText, "discord-message:first")
+            ]
+          }
+        }),
+      privateText
+    );
+  });
+
+  it("keeps an exact duplicate rescan stable after a JSON checkpoint round-trip", () => {
+    const initial = parseMessages([
+      message("ordinary-text", "First observed message", "discord-message:first"),
+      message("ordinary-text", "Second observed message", "discord-message:second")
+    ]);
+    const checkpoint = JSON.parse(JSON.stringify(checkpointFrom(initial))) as ConversationCheckpoint;
+
+    const resumed = parseConversation({
+      destination,
+      boundary: messageIdentity("discord-message:boundary"),
+      messageLimit: 3,
+      attachmentLimitPerMessage: 2,
+      attachmentLimitTotal: 5,
+      supportedAttachmentMediaTypes: ["image/png"],
+      checkpoint,
+      observation: {
+        destination,
+        boundary: messageIdentity("discord-message:boundary"),
+        coverage: { kind: "contiguous-after-boundary" },
+        messages: [
+          message("ordinary-text", "First observed message", "discord-message:first"),
+          message("ordinary-text", "Second observed message", "discord-message:second")
+        ]
+      }
+    });
+
+    expect(resumed).toEqual({
+      destination,
+      boundary: messageIdentity("discord-message:boundary"),
+      complete: false,
+      messages: checkpoint.messages,
+      selectedAttachments: checkpoint.selectedAttachments
+    });
+  });
+
+  it("freezes a complete checkpoint while still validating its observed prefix", () => {
+    const complete = parseMessages(
+      [
+        message("ordinary-text", "First observed message", "discord-message:first"),
+        message("ordinary-text", "Second observed message", "discord-message:second"),
+        message("ordinary-text", "Third observed message", "discord-message:third")
+      ],
+      { messageLimit: 3 }
+    );
+    const checkpoint = checkpointFrom(complete);
+
+    const resumed = parseConversation({
+      destination,
+      boundary: messageIdentity("discord-message:boundary"),
+      messageLimit: 3,
+      attachmentLimitPerMessage: 2,
+      attachmentLimitTotal: 5,
+      supportedAttachmentMediaTypes: ["image/png"],
+      checkpoint,
+      observation: {
+        destination,
+        boundary: messageIdentity("discord-message:boundary"),
+        coverage: { kind: "contiguous-after-boundary" },
+        messages: [
+          message("ordinary-text", "First observed message", "discord-message:first"),
+          message("ordinary-text", "Second observed message", "discord-message:second"),
+          message("ordinary-text", "Third observed message", "discord-message:third"),
+          message("ordinary-text", "Ignored after completion", "discord-message:fourth")
+        ]
+      }
+    });
+
+    expect(resumed.messages).toBe(checkpoint.messages);
+    expect(resumed.selectedAttachments).toBe(checkpoint.selectedAttachments);
+    expect(resumed.complete).toBe(true);
+  });
+
+  it("retains the no-boundary segment start while resuming a partial checkpoint", () => {
+    const segmentStart = messageIdentity("discord-message:segment-start");
+    const initial = parseConversation({
+      destination,
+      messageLimit: 3,
+      attachmentLimitPerMessage: 2,
+      attachmentLimitTotal: 5,
+      supportedAttachmentMediaTypes: ["image/png"],
+      observation: {
+        destination,
+        coverage: { kind: "contiguous-visible-segment", segmentStart },
+        messages: [message("ordinary-text", "First observed message", "discord-message:segment-start")]
+      }
+    });
+    const checkpoint = checkpointFrom(initial);
+
+    const resumed = parseConversation({
+      destination,
+      messageLimit: 3,
+      attachmentLimitPerMessage: 2,
+      attachmentLimitTotal: 5,
+      supportedAttachmentMediaTypes: ["image/png"],
+      checkpoint,
+      observation: {
+        destination,
+        coverage: { kind: "contiguous-visible-segment", segmentStart },
+        messages: [
+          message("ordinary-text", "First observed message", "discord-message:segment-start"),
+          message("ordinary-text", "Later observed message", "discord-message:later")
+        ]
+      }
+    });
+
+    expect(resumed.segmentStart).toBe(segmentStart);
+    expect(resumed.messages[0]).toBe(checkpoint.messages[0]);
+    expect(resumed.messages.map((item) => item.text)).toEqual([
+      "First observed message",
+      "Later observed message"
+    ]);
+  });
+
+  it.each([
+    ["inserts a newly qualifying message", [
+      message("ordinary-text", "Inserted message", "discord-message:inserted"),
+      message("ordinary-text", "First observed message", "discord-message:first"),
+      message("ordinary-text", "Second observed message", "discord-message:second")
+    ]],
+    ["omits an accepted message", [message("ordinary-text", "Second observed message", "discord-message:second")]],
+    ["edits accepted text", [
+      message("ordinary-text", "Edited first message", "discord-message:first"),
+      message("ordinary-text", "Second observed message", "discord-message:second")
+    ]],
+    ["edits accepted author metadata", [
+      { ...message("ordinary-text", "First observed message", "discord-message:first"), author: { id: "changed-author", name: "Changed name" } },
+      message("ordinary-text", "Second observed message", "discord-message:second")
+    ]],
+    ["edits accepted timestamp metadata", [
+      message("ordinary-text", "First observed message", "discord-message:first", "participant", "2026-08-26T11:00:00.000Z"),
+      message("ordinary-text", "Second observed message", "discord-message:second")
+    ]],
+    ["reorders the accepted prefix", [
+      message("ordinary-text", "Second observed message", "discord-message:second"),
+      message("ordinary-text", "First observed message", "discord-message:first")
+    ]],
+    ["changes an accepted identity", [
+      message("ordinary-text", "First observed message", "discord-message:changed-first"),
+      message("ordinary-text", "Second observed message", "discord-message:second")
+    ]]
+  ])("fails closed when a checkpoint rescan %s", (_description, messages) => {
+    const checkpoint = checkpointFrom(parseMessages([
+      message("ordinary-text", "First observed message", "discord-message:first"),
+      message("ordinary-text", "Second observed message", "discord-message:second")
+    ]));
+
+    expectControlledCheckpointError(
+      () => resumeBoundaryCheckpoint(checkpoint, messages),
+      "private-checkpoint-drift"
+    );
+  });
+
+  it("fails closed when a checkpoint attachment selection changes order or value", () => {
+    const checkpoint = checkpointFrom(parseMessages([
+      message("ordinary-text", "First observed message", "discord-message:first", "participant", undefined, [
+        attachment(0, "image/png", "selection:first"),
+        attachment(1, "image/png", "selection:second")
+      ])
+    ]));
+
+    expectControlledCheckpointError(
+      () => resumeBoundaryCheckpoint(checkpoint, [
+        message("ordinary-text", "First observed message", "discord-message:first", "participant", undefined, [
+          attachment(0, "image/png", "selection:second"),
+          attachment(1, "image/png", "selection:first")
+        ])
+      ]),
+      "selection:first"
+    );
+  });
+
+  it.each([
+    ["boundary", (checkpoint: ConversationCheckpoint) => ({ ...checkpoint, boundary: messageIdentity("discord-message:changed-boundary") })],
+    ["message limit", (checkpoint: ConversationCheckpoint) => ({ ...checkpoint, messageLimit: 4 })],
+    ["per-message attachment limit", (checkpoint: ConversationCheckpoint) => ({ ...checkpoint, attachmentLimitPerMessage: 1 })],
+    ["total attachment limit", (checkpoint: ConversationCheckpoint) => ({ ...checkpoint, attachmentLimitTotal: 4 })],
+    ["supported media policy", (checkpoint: ConversationCheckpoint) => ({ ...checkpoint, supportedAttachmentMediaTypes: ["image/jpeg"] })]
+  ])("fails closed when a checkpoint changes its %s policy", (_description, changeCheckpoint) => {
+    const checkpoint = checkpointFrom(parseMessages([
+      message("ordinary-text", "First observed message", "discord-message:first")
+    ]));
+
+    expectControlledCheckpointError(
+      () => resumeBoundaryCheckpoint(changeCheckpoint(checkpoint), [
+        message("ordinary-text", "First observed message", "discord-message:first")
+      ]),
+      "private-checkpoint-policy"
+    );
+  });
+
   it("rejects boundary observations without contiguous boundary-relative coverage", () => {
     const request = validParseRequest();
 
@@ -774,8 +1087,54 @@ function validParseRequest() {
   };
 }
 
+function checkpointFrom(snapshot: ReturnType<typeof parseConversation>): ConversationCheckpoint {
+  return {
+    destination: snapshot.destination,
+    ...(snapshot.boundary === undefined ? {} : { boundary: snapshot.boundary }),
+    ...(snapshot.segmentStart === undefined ? {} : { segmentStart: snapshot.segmentStart }),
+    messageLimit: 3,
+    attachmentLimitPerMessage: 2,
+    attachmentLimitTotal: 5,
+    supportedAttachmentMediaTypes: ["image/png"],
+    complete: snapshot.complete,
+    messages: snapshot.messages,
+    selectedAttachments: snapshot.selectedAttachments
+  };
+}
+
+function resumeBoundaryCheckpoint(
+  checkpoint: ConversationCheckpoint,
+  messages: readonly ConversationObservation[]
+) {
+  return parseConversation({
+    destination,
+    boundary: messageIdentity("discord-message:boundary"),
+    messageLimit: 3,
+    attachmentLimitPerMessage: 2,
+    attachmentLimitTotal: 5,
+    supportedAttachmentMediaTypes: ["image/png"],
+    checkpoint,
+    observation: {
+      destination,
+      boundary: messageIdentity("discord-message:boundary"),
+      coverage: { kind: "contiguous-after-boundary" },
+      messages
+    }
+  });
+}
+
 function expectControlledObservationError(action: () => unknown, privateInputValue: string): void {
   expectControlledParserError(action, privateInputValue, "ConversationObservationError");
+}
+
+function expectControlledCheckpointError(action: () => unknown, privateInputValue: string): void {
+  try {
+    action();
+    throw new Error("Expected a checkpoint error.");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ConversationCheckpointError);
+    expect((error as Error).message).not.toContain(privateInputValue);
+  }
 }
 
 function expectControlledParserError(action: () => unknown, privateInputValue: string, name: string): void {
