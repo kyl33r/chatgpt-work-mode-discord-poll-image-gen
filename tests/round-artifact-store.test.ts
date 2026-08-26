@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import sharp from "sharp";
 
 import { JsonRoundArtifactStore } from "../src/round/round-artifact-store.js";
 
@@ -140,7 +141,7 @@ describe("JsonRoundArtifactStore", () => {
     const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
     await mkdir(feedbackRoot, { recursive: true });
     const imagePath = join(feedbackRoot, "message-1-attachment-0.png");
-    await writeFile(imagePath, validPng());
+    await writeFile(imagePath, await validPng());
 
     const accepted = await new JsonRoundArtifactStore(roundsRoot).acceptFeedbackImage(
       "R001",
@@ -200,6 +201,24 @@ describe("JsonRoundArtifactStore", () => {
       );
     }
   });
+
+  it("rejects a complete-looking PNG whose encoded payload is corrupt", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const imagePath = join(feedbackRoot, "message-1-attachment-0.png");
+    const corrupt = Buffer.from(await validPng());
+    const imageDataMarker = corrupt.indexOf(Buffer.from("IDAT", "ascii"));
+    corrupt[imageDataMarker + 4] = (corrupt[imageDataMarker + 4] ?? 0) ^ 0xff;
+    await writeFile(imagePath, corrupt);
+
+    await expect(
+      new JsonRoundArtifactStore(roundsRoot).acceptFeedbackImage("R001", 1, 0, imagePath)
+    ).rejects.toThrow(
+      "Feedback image must be a valid staged PNG, JPEG, or WebP inside its round capsule."
+    );
+  });
 });
 
 async function temporaryDirectory(): Promise<string> {
@@ -208,20 +227,8 @@ async function temporaryDirectory(): Promise<string> {
   return directory;
 }
 
-function validPng(): Buffer {
-  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(1, 0);
-  ihdr.writeUInt32BE(1, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 6;
-  return Buffer.concat([signature, pngChunk("IHDR", ihdr), pngChunk("IDAT", Buffer.from([0])), pngChunk("IEND", Buffer.alloc(0))]);
-}
-
-function pngChunk(type: string, data: Buffer): Buffer {
-  const chunk = Buffer.alloc(12 + data.length);
-  chunk.writeUInt32BE(data.length, 0);
-  chunk.write(type, 4, 4, "ascii");
-  data.copy(chunk, 8);
-  return chunk;
+function validPng(): Promise<Buffer> {
+  return sharp({
+    create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } }
+  }).png().toBuffer();
 }

@@ -116,8 +116,8 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
   const agentInstructions = await readFile(resolve(repositoryRoot, "AGENTS.md"), "utf8");
   const constantsSource = await readFile(resolve(repositoryRoot, "src/constants.ts"), "utf8");
   for (const constant of [
-    "FEEDBACK_IMAGE_LIMIT_PER_MESSAGE = 2",
-    "FEEDBACK_IMAGE_LIMIT_PER_ROUND = 5"
+    "export const FEEDBACK_IMAGE_LIMIT_PER_MESSAGE",
+    "export const FEEDBACK_IMAGE_LIMIT_PER_ROUND"
   ]) {
     if (!constantsSource.includes(constant)) {
       issues.push(`src/constants.ts is missing configured image limit: ${constant}`);

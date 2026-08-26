@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import sharp from "sharp";
 
 import {
   FEEDBACK_IMAGE_LIMIT_PER_MESSAGE,
@@ -411,8 +412,8 @@ describe("executeCommand", () => {
     await mkdir(feedbackRoot, { recursive: true });
     const first = join(feedbackRoot, "message-1-attachment-0.png");
     const second = join(feedbackRoot, "message-2-attachment-0.png");
-    await writeFile(first, validPng());
-    await writeFile(second, validPng());
+    await writeFile(first, await validPng());
+    await writeFile(second, await validPng());
     const artifacts = new JsonRoundArtifactStore(roundsRoot);
     const messages = [1, 2, 3, 4, 5].map(observation);
     messages[0]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png", imagePath: first }];
@@ -761,22 +762,8 @@ function runCommand(
   });
 }
 
-function validPng(): Buffer {
-  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(1, 0);
-  ihdr.writeUInt32BE(1, 4);
-  const chunk = (type: string, data: Buffer) => {
-    const value = Buffer.alloc(12 + data.length);
-    value.writeUInt32BE(data.length, 0);
-    value.write(type, 4, 4, "ascii");
-    data.copy(value, 8);
-    return value;
-  };
-  return Buffer.concat([
-    signature,
-    chunk("IHDR", ihdr),
-    chunk("IDAT", Buffer.from([0])),
-    chunk("IEND", Buffer.alloc(0))
-  ]);
+function validPng(): Promise<Buffer> {
+  return sharp({
+    create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } }
+  }).png().toBuffer();
 }
