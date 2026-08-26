@@ -16,7 +16,7 @@ import {
   type RoundArtifactStore
 } from "../src/round/round-artifact-store.js";
 import type { ClipboardImageSource } from "../src/clipboard/clipboard-image-source.js";
-import { applyRoundEvent, createRound } from "../src/round/round-state.js";
+import { applyRoundEvent, createRound, type RoundState } from "../src/round/round-state.js";
 import type { DiscordMessageObservation } from "../src/round/message-collector.js";
 import {
   JsonRoundStateStore,
@@ -512,6 +512,82 @@ describe("executeCommand", () => {
       { roundId: "RINACTIVE", boundaryMessageUrl: "base-message", messages: observations },
       store
     )).rejects.toThrow("is not collecting messages");
+  });
+
+  it("hides a state-save failure while recording feedback capture attention", async () => {
+    const round = applyRoundEvent(collectingRound("RSAVE"), {
+      type: "feedback-captures-planned",
+      feedbackCaptureBatch: {
+        boundaryMessageUrl: "base-message",
+        messages: [{
+          messageUrl: "message-1",
+          messageOrdinal: 1,
+          selectedAttachments: [{ attachmentIndex: 0, mediaType: "image/png", status: "selected" }]
+        }]
+      }
+    });
+    const store = new ThrowingSaveRoundStateStore(round, new Error("private state write failure"));
+
+    await expect(runCommand(
+      "plan-feedback-captures",
+      { roundId: "RSAVE", boundaryMessageUrl: "base-message", messages: [] },
+      store
+    )).rejects.toThrow("Unable to persist controlled Needs Attention state.");
+  });
+
+  it("treats changed persisted message and attachment order as attention-worthy", async () => {
+    const observations = [1, 2].map((index) => ({
+      ...observation(index),
+      roundId: "RORDER",
+      attachments: index === 1
+        ? [{ attachmentIndex: 0, mediaType: "image/png" }, { attachmentIndex: 1, mediaType: "image/jpeg" }]
+        : [{ attachmentIndex: 0, mediaType: "image/png" }]
+    }));
+    const selected = applyRoundEvent(collectingRound("RORDER"), {
+      type: "feedback-captures-planned",
+      feedbackCaptureBatch: {
+        boundaryMessageUrl: "base-message",
+        messages: [{
+          messageUrl: "message-1",
+          messageOrdinal: 1,
+          selectedAttachments: [
+            { attachmentIndex: 0, mediaType: "image/png", status: "selected" },
+            { attachmentIndex: 1, mediaType: "image/jpeg", status: "selected" }
+          ]
+        }, {
+          messageUrl: "message-2",
+          messageOrdinal: 2,
+          selectedAttachments: [{ attachmentIndex: 0, mediaType: "image/png", status: "selected" }]
+        }]
+      }
+    });
+    const messageReordered = {
+      ...selected,
+      feedbackCaptureBatch: {
+        ...selected.feedbackCaptureBatch!,
+        messages: [...selected.feedbackCaptureBatch!.messages].reverse()
+      }
+    };
+    const attachmentReordered = {
+      ...selected,
+      feedbackCaptureBatch: {
+        ...selected.feedbackCaptureBatch!,
+        messages: selected.feedbackCaptureBatch!.messages.map((message) =>
+          message.messageOrdinal === 1
+            ? { ...message, selectedAttachments: [...message.selectedAttachments].reverse() }
+            : message
+        )
+      }
+    };
+
+    for (const round of [messageReordered, attachmentReordered]) {
+      const store = new ThrowingSaveRoundStateStore(round);
+      await expect(runCommand(
+        "plan-feedback-captures",
+        { roundId: "RORDER", boundaryMessageUrl: "base-message", messages: observations },
+        store
+      )).resolves.toMatchObject({ action: "needs-attention" });
+    }
   });
 
   it("coordinates a planned clipboard capture through tuple-only command payloads", async () => {
@@ -1094,6 +1170,28 @@ class FakeClipboardArtifacts implements RoundArtifactStore {
   public async requireFeedbackImage(): Promise<string> { return ""; }
   public async copyResultAsBase(): Promise<string> { return ""; }
   public async discardUnpersistedBase(): Promise<void> {}
+}
+
+class ThrowingSaveRoundStateStore implements RoundStateStore {
+  public constructor(
+    private current: RoundState,
+    private readonly error?: Error
+  ) {}
+
+  public async get(roundId: string): Promise<RoundState | undefined> {
+    return this.current.id === roundId ? this.current : undefined;
+  }
+
+  public async list(): Promise<RoundState[]> {
+    return [this.current];
+  }
+
+  public async save(round: RoundState): Promise<void> {
+    if (this.error) {
+      throw this.error;
+    }
+    this.current = round;
+  }
 }
 
 function validPng(red = 0): Promise<Buffer> {

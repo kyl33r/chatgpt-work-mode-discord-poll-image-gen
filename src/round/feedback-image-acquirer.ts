@@ -23,6 +23,8 @@ const ARTIFACT_INSTALLATION_AMBIGUITY_REASON =
   "Feedback image installation is ambiguous; reconcile the Feedback Round manually.";
 const CAPTURE_PROTOCOL_AMBIGUITY_REASON =
   "Feedback image capture state is ambiguous; reconcile the Feedback Round manually.";
+const STATE_UNAVAILABLE_ERROR = "Feedback image capture state is unavailable.";
+const ATTENTION_PERSISTENCE_ERROR = "Unable to persist controlled Needs Attention state.";
 
 export class FeedbackImageAcquirer {
   public constructor(
@@ -121,19 +123,29 @@ export class FeedbackImageAcquirer {
   }
 
   private async requireCollectingRound(roundId: string): Promise<RoundState> {
-    const round = await this.store.get(roundId);
+    let round: RoundState | undefined;
+    try {
+      round = await this.store.get(roundId);
+    } catch {
+      throw new Error(STATE_UNAVAILABLE_ERROR);
+    }
     if (!round) {
       throw new Error("Feedback Round was not found.");
     }
     if (round.phase !== "collecting-messages" || !round.feedbackCaptureBatch) {
       throw new Error("Feedback image capture is not available for this round.");
     }
-    const activeRounds = (await this.store.list()).filter(
-      (candidate) =>
-        candidate.phase !== "completed" &&
-        candidate.phase !== "stopped" &&
-        candidate.phase !== "needs-attention"
-    );
+    let activeRounds: RoundState[];
+    try {
+      activeRounds = (await this.store.list()).filter(
+        (candidate) =>
+          candidate.phase !== "completed" &&
+          candidate.phase !== "stopped" &&
+          candidate.phase !== "needs-attention"
+      );
+    } catch {
+      throw new Error(STATE_UNAVAILABLE_ERROR);
+    }
     if (activeRounds.length !== 1 || activeRounds[0]!.id !== round.id) {
       throw new Error("Feedback image capture does not target the active Feedback Round.");
     }
@@ -144,7 +156,11 @@ export class FeedbackImageAcquirer {
     round: RoundState,
     reason: string
   ): Promise<{ action: "needs-attention"; reason: string }> {
-    await this.store.save(applyRoundEvent(round, { type: "attention-required", reason }));
+    try {
+      await this.store.save(applyRoundEvent(round, { type: "attention-required", reason }));
+    } catch {
+      throw new Error(ATTENTION_PERSISTENCE_ERROR);
+    }
     return { action: "needs-attention", reason };
   }
 }

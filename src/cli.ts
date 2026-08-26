@@ -742,7 +742,11 @@ async function requireFeedbackCaptureAttention(
   reason: string
 ): Promise<{ action: "needs-attention"; roundId: string; reason: string }> {
   const attention = applyRoundEvent(round, { type: "attention-required", reason });
-  await store.save(attention);
+  try {
+    await store.save(attention);
+  } catch {
+    throw new Error("Unable to persist controlled Needs Attention state.");
+  }
   return { action: "needs-attention", roundId: round.id, reason };
 }
 

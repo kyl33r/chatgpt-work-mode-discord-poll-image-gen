@@ -115,6 +115,45 @@ describe("FeedbackImageAcquirer", () => {
     expect(clipboard.getChangeCountCalls).toBe(0);
   });
 
+  it("does not touch the clipboard or artifacts for a wrong tuple against a recorded intent", async () => {
+    const clipboard = new FakeClipboardImageSource(41, { observedChangeCount: 42, pngBytes: new Uint8Array([1]) });
+    const artifacts = new FakeArtifactStore("accepted-artifact");
+    const acquirer = new FeedbackImageAcquirer(
+      new InMemoryRoundStateStore(intentRecordedRound("RINTENT")),
+      clipboard,
+      artifacts
+    );
+
+    await expect(acquirer.capture({ roundId: "RINTENT", messageOrdinal: 1, attachmentIndex: 1 }))
+      .resolves.toMatchObject({ action: "needs-attention" });
+    expect(clipboard.readRequests).toEqual([]);
+    expect(artifacts.accepted).toEqual([]);
+  });
+
+  it("hides state-store list and attention-save failures before any clipboard or artifact action", async () => {
+    const clipboard = new FakeClipboardImageSource(41, { observedChangeCount: 42, pngBytes: new Uint8Array([1]) });
+    const artifacts = new FakeArtifactStore("accepted-artifact");
+    const listFailure = new FeedbackImageAcquirer(
+      new InMemoryRoundStateStore(plannedRound("RLIST"), new Error("private list failure")),
+      clipboard,
+      artifacts
+    );
+
+    await expect(listFailure.prepare({ roundId: "RLIST", messageOrdinal: 1, attachmentIndex: 0 }))
+      .rejects.toThrow("Feedback image capture state is unavailable.");
+
+    const attentionSaveFailure = new FeedbackImageAcquirer(
+      new InMemoryRoundStateStore(plannedRound("RSAVE"), undefined, new Error("private attention save failure")),
+      clipboard,
+      artifacts
+    );
+    await expect(attentionSaveFailure.prepare({ roundId: "RSAVE", messageOrdinal: 2, attachmentIndex: 0 }))
+      .rejects.toThrow("Unable to persist controlled Needs Attention state.");
+    expect(clipboard.getChangeCountCalls).toBe(0);
+    expect(clipboard.readRequests).toEqual([]);
+    expect(artifacts.accepted).toEqual([]);
+  });
+
   it("marks an unresolved copy intent as needing attention without another copy preparation", async () => {
     const clipboard = new FakeClipboardImageSource(41);
     const store = new InMemoryRoundStateStore(intentRecordedRound("RRESTART"));
@@ -202,17 +241,27 @@ class FakeArtifactStore implements RoundArtifactStore {
 class InMemoryRoundStateStore implements RoundStateStore {
   public readonly saved: RoundState[] = [];
 
-  public constructor(private current: RoundState) {}
+  public constructor(
+    private current: RoundState,
+    private readonly listError?: Error,
+    private readonly saveError?: Error
+  ) {}
 
   public async get(roundId: string): Promise<RoundState | undefined> {
     return this.current.id === roundId ? this.current : undefined;
   }
 
   public async list(): Promise<RoundState[]> {
+    if (this.listError) {
+      throw this.listError;
+    }
     return [this.current];
   }
 
   public async save(round: RoundState): Promise<void> {
+    if (this.saveError) {
+      throw this.saveError;
+    }
     this.current = round;
     this.saved.push(round);
   }
