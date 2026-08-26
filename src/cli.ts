@@ -20,6 +20,11 @@ import {
 import { JsonDiscordChannelAllowlistStore } from "./config/discord-channel-allowlist.js";
 import type { DiscordChannelAllowlistStore } from "./config/discord-channel-allowlist.js";
 import { resolveDiscordChannel } from "./config/resolve-discord-channel.js";
+import { executeConversationCommand } from "./conversation/conversation-command.js";
+import {
+  JsonConversationPrivateHandoff,
+  type ConversationPrivateHandoff
+} from "./conversation/conversation-private-handoff.js";
 import {
   collectMessages,
   MessageCollectionAmbiguityError,
@@ -47,6 +52,7 @@ import { FileWorkflowLock, type WorkflowLock } from "./workflow-lock.js";
 export interface CommandDependencies {
   allowlist: DiscordChannelAllowlistStore;
   artifacts?: RoundArtifactStore;
+  handoff?: ConversationPrivateHandoff;
   workflowLock: WorkflowLock;
 }
 
@@ -56,6 +62,13 @@ export async function executeCommand(
   store: RoundStateStore,
   dependencies: CommandDependencies
 ): Promise<unknown> {
+  if (command === "parse-conversation") {
+    return executeConversationCommand(command, payload, {
+      allowlist: dependencies.allowlist,
+      handoff: dependencies.handoff ?? new JsonConversationPrivateHandoff(),
+      workflowLock: dependencies.workflowLock
+    });
+  }
   return dependencies.workflowLock.runExclusive(async () => {
     const allowedChannelUrl = await resolveDiscordChannel(dependencies.allowlist);
     return executeLockedCommand(
@@ -774,6 +787,10 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   main().catch((error: unknown) => {
+    if (process.argv[2] === "parse-conversation") {
+      process.stdout.write(`${JSON.stringify({ action: "needs-attention" }, null, 2)}\n`);
+      return;
+    }
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   });
