@@ -1,24 +1,11 @@
 import { constants as fsConstants } from "node:fs";
-import {
-  access,
-  copyFile,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  realpath,
-  rename,
-  rm,
-  stat
-} from "node:fs/promises";
+import { access, copyFile, lstat, mkdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   FEEDBACK_MESSAGE_LIMIT,
   LEGACY_V2_STATE_BACKUP_FILE,
   LEGACY_V3_STATE_BACKUP_FILE,
-  LEGACY_V4_ROUND_BACKUP_FILE,
   ROUND_BASE_IMAGE_BASENAME,
   ROUND_MIGRATION_STAGING_DIRECTORY,
   ROUND_MIGRATIONS_DIRECTORY_NAME,
@@ -31,195 +18,11 @@ import { assertSafeRoundId, roundCapsuleDirectory } from "./round-paths.js";
 import type { RoundState } from "./round-state.js";
 import { JsonRoundStateStore } from "./round-state-store.js";
 
-export interface IsolatedRoundMigrationResult {
-  migratedRoundCount: number;
-}
-
-export async function migrateIsolatedRoundCapsulesV4ToV5(
-  roundsRoot: string
-): Promise<IsolatedRoundMigrationResult> {
-  let entries;
-  try {
-    entries = await readdir(roundsRoot, { withFileTypes: true });
-  } catch (error) {
-    if (isMissingFileError(error)) {
-      return { migratedRoundCount: 0 };
-    }
-    throw error;
-  }
-  const resolvedRoot = await realpath(resolve(roundsRoot));
-  let migratedRoundCount = 0;
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (entry.isSymbolicLink()) {
-      throw unsupportedIsolatedState();
-    }
-    if (!entry.isDirectory()) {
-      continue;
-    }
-    try {
-      assertSafeRoundId(entry.name);
-    } catch {
-      throw unsupportedIsolatedState();
-    }
-    const capsule = roundCapsuleDirectory(roundsRoot, entry.name);
-    const resolvedCapsule = await realpath(capsule);
-    const capsuleFromRoot = relative(resolvedRoot, resolvedCapsule);
-    if (
-      capsuleFromRoot !== entry.name ||
-      capsuleFromRoot === ".." ||
-      capsuleFromRoot.startsWith(`..${sep}`) ||
-      isAbsolute(capsuleFromRoot)
-    ) {
-      throw unsupportedIsolatedState();
-    }
-    const statePath = join(capsule, ROUND_STATE_FILE_NAME);
-    const stateMetadata = await lstat(statePath).catch(() => {
-      throw unsupportedIsolatedState();
-    });
-    if (!stateMetadata.isFile() || stateMetadata.isSymbolicLink()) {
-      throw unsupportedIsolatedState();
-    }
-    const legacyContents = await readFile(statePath, "utf8");
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(legacyContents) as unknown;
-    } catch {
-      throw unsupportedIsolatedState();
-    }
-    if (isRecord(parsed) && parsed.schemaVersion === ROUND_SCHEMA_VERSION) {
-      try {
-        if (!(await new JsonRoundStateStore(roundsRoot).get(entry.name))) {
-          throw new Error("missing current round");
-        }
-      } catch {
-        throw unsupportedIsolatedState();
-      }
-      continue;
-    }
-    if (
-      !isRecord(parsed) ||
-      parsed.schemaVersion !== 4 ||
-      parsed.id !== entry.name ||
-      "parentRoundId" in parsed
-    ) {
-      throw unsupportedIsolatedState();
-    }
-    const migrated = { ...parsed, schemaVersion: ROUND_SCHEMA_VERSION } as RoundState;
-    const validationRoot = join(dirname(roundsRoot), `.round-v5-validation-${Date.now()}`);
-    try {
-      await new JsonRoundStateStore(validationRoot).save(migrated);
-    } catch {
-      throw unsupportedIsolatedState();
-    } finally {
-      await rm(validationRoot, { recursive: true, force: true });
-    }
-    const migrations = join(capsule, ROUND_MIGRATIONS_DIRECTORY_NAME);
-    try {
-      await mkdir(migrations, { mode: 0o700 });
-    } catch (error) {
-      if (!isAlreadyExistsError(error)) {
-        throw error;
-      }
-    }
-    const migrationsMetadata = await lstat(migrations).catch(() => {
-      throw unsupportedIsolatedState();
-    });
-    if (
-      !migrationsMetadata.isDirectory() ||
-      migrationsMetadata.isSymbolicLink() ||
-      relative(resolvedCapsule, await realpath(migrations)) !== ROUND_MIGRATIONS_DIRECTORY_NAME
-    ) {
-      throw unsupportedIsolatedState();
-    }
-    const backupPath = join(migrations, LEGACY_V4_ROUND_BACKUP_FILE);
-    await ensureIsolatedMigrationBackup(backupPath, legacyContents);
-    const temporaryPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
-    const handle = await open(temporaryPath, "wx", 0o600);
-    try {
-      await handle.writeFile(`${JSON.stringify(migrated, null, 2)}\n`, "utf8");
-      await handle.sync();
-      await handle.close();
-      await rename(temporaryPath, statePath);
-    } catch (error) {
-      await handle.close().catch(() => undefined);
-      await rm(temporaryPath, { force: true }).catch(() => undefined);
-      throw error;
-    }
-    migratedRoundCount += 1;
-  }
-  return { migratedRoundCount };
-}
-
-async function ensureIsolatedMigrationBackup(
-  backupPath: string,
-  legacyContents: string
-): Promise<void> {
-  try {
-    await requireMatchingRegularBackup(backupPath, legacyContents);
-    return;
-  } catch (error) {
-    if (!isMissingFileError(error)) {
-      throw unsupportedIsolatedState();
-    }
-  }
-
-  let backup;
-  try {
-    backup = await open(backupPath, "wx", 0o600);
-  } catch (error) {
-    if (isAlreadyExistsError(error)) {
-      await requireMatchingRegularBackup(backupPath, legacyContents).catch(() => {
-        throw unsupportedIsolatedState();
-      });
-      return;
-    }
-    throw error;
-  }
-  try {
-    await backup.writeFile(legacyContents, "utf8");
-    await backup.sync();
-    await backup.close();
-  } catch (error) {
-    await backup.close().catch(() => undefined);
-    await rm(backupPath, { force: true }).catch(() => undefined);
-    throw error;
-  }
-}
-
-async function requireMatchingRegularBackup(
-  backupPath: string,
-  expectedContents: string
-): Promise<void> {
-  const metadata = await lstat(backupPath);
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    (await readFile(backupPath, "utf8")) !== expectedContents
-  ) {
-    throw unsupportedIsolatedState();
-  }
-}
-
 export interface SharedStateMigrationPaths {
   legacyStatePath: string;
   legacyBaseImageRoot: string;
   legacyMigrationRoot: string;
   roundsRoot: string;
-}
-
-export interface RoundStateMigrationResult {
-  isolated: IsolatedRoundMigrationResult;
-  shared?: StateMigrationResult;
-}
-
-export async function migrateRoundState(
-  paths: SharedStateMigrationPaths
-): Promise<RoundStateMigrationResult> {
-  const isolated = await migrateIsolatedRoundCapsulesV4ToV5(paths.roundsRoot);
-  if (!(await pathExists(paths.legacyStatePath))) {
-    return { isolated };
-  }
-  return { isolated, shared: await migrateSharedRoundState(paths) };
 }
 
 export interface StateMigrationResult {
@@ -496,12 +299,6 @@ function unsupportedSharedState(): Error {
   return new Error("Shared round state is not the supported live schema-three round.");
 }
 
-function unsupportedIsolatedState(): Error {
-  return new Error(
-    "Isolated round state is not a supported schema-four or schema-five capsule."
-  );
-}
-
 async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path);
@@ -516,10 +313,6 @@ async function pathExists(path: string): Promise<boolean> {
 
 function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
-
-function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && error.code === "EEXIST";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

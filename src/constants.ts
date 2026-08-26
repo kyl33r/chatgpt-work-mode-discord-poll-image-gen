@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-export const ROUND_SCHEMA_VERSION = 5;
+export const ROUND_SCHEMA_VERSION = 4;
 export const OPERATION_TURN_NUMBER = 1;
 export const FEEDBACK_MESSAGE_LIMIT = 5;
 export const DISCORD_SCAN_INTERVAL_MS = 15_000;
@@ -31,7 +31,6 @@ export const LEGACY_SHARED_BASE_IMAGE_ROOT = join(STATE_ROOT, "base-images");
 export const LEGACY_SHARED_MIGRATION_ROOT = join(STATE_ROOT, "migrations");
 export const ROUND_MIGRATION_STAGING_DIRECTORY = ".round-migration-v4";
 export const LEGACY_V3_STATE_BACKUP_FILE = "rounds-v3.json";
-export const LEGACY_V4_ROUND_BACKUP_FILE = "round-v4.json";
 export const LEGACY_V2_STATE_BACKUP_FILE = "rounds-v2.json";
 export const RESULT_MARKER_TEMPLATE = "===== RESULT: <id> =====";
 export const POLL_START_MARKER_TEMPLATE = "===== POLL START: <id> =====";

@@ -13,7 +13,6 @@ describe("project skills", () => {
 
   it.each([
     ["configure-discord-channel", "$configure-discord-channel"],
-    ["continue-from-result", "$continue-from-result"],
     ["discord-image-paste", "$discord-image-paste"],
     ["submit-base-image", "$submit-base-image"],
     ["get-discord-polls", "$get-discord-polls"],
@@ -22,10 +21,6 @@ describe("project skills", () => {
     [
       "configure-discord-channel",
       "Configure the currently opened Discord channel as the local allowlisted destination."
-    ],
-    [
-      "continue-from-result",
-      "Continue the Discord round from the previous result image."
     ],
     ["discord-image-paste", "Paste this image from the clipboard into Discord."],
     ["submit-base-image", "Post this base image to Discord for participant feedback."],

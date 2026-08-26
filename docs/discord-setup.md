@@ -58,8 +58,6 @@ The skill stages the selected image inside its gitignored `.state/rounds/<round-
 5. Let `$round-start` invoke `$imagegen` here exactly once using that persisted prompt.
 6. Publish exactly one controlled outcome: the Result Image, sanitized refusal, or sanitized failure status.
 
-To improve the latest successful Result Image in another round, invoke `$continue-from-result`. It selects the most recently started completed success in this channel, copies that image into a new isolated round capsule, posts it as the new Base Image after confirmation, and then resumes `$round-start`. Arbitrary round IDs, cross-channel sources, and refused or failed results are not eligible.
-
 The skills request confirmation at live posting boundaries when required. If Discord login, destination, poll state, image generation, or upload confirmation is ambiguous, the round pauses as `needs-attention` and does not retry automatically.
 
 ## Local state and troubleshooting

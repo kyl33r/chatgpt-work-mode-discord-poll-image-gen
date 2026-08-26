@@ -134,7 +134,6 @@ const ROUND_KEYS = new Set([
   "baseImagePath",
   "channelUrl",
   "messageLimit",
-  "parentRoundId",
   "baseMessageUrl",
   "collectionStartedAt",
   "capturedMessages",
@@ -158,7 +157,6 @@ function isRoundState(value: unknown, expectedRoundId: string): value is RoundSt
     typeof value.channelUrl !== "string" ||
     !Number.isInteger(value.messageLimit) ||
     (value.messageLimit as number) <= 0 ||
-    !isOptionalString(value.parentRoundId) ||
     !Array.isArray(value.capturedMessages) ||
     value.capturedMessages.length > (value.messageLimit as number) ||
     !value.capturedMessages.every(isCapturedMessage) ||

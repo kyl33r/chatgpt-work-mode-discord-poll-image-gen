@@ -1,4 +1,0 @@
-interface:
-  display_name: "Continue from Result"
-  short_description: "Start a round from the latest result"
-  default_prompt: "Use $continue-from-result to start a new Discord round from the previous completed result image."

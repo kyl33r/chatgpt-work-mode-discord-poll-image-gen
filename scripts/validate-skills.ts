@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 
 const EXPECTED_SKILLS = [
   "configure-discord-channel",
-  "continue-from-result",
   "discord-image-paste",
   "get-discord-polls",
   "image-gen",
@@ -14,7 +13,6 @@ const EXPECTED_SKILLS = [
 
 const DISCOVERY_CUES: Record<(typeof EXPECTED_SKILLS)[number], readonly string[]> = {
   "configure-discord-channel": ["configure", "discord", "channel", "allowlist"],
-  "continue-from-result": ["continue", "previous", "result", "discord"],
   "discord-image-paste": ["paste", "discord", "image", "clipboard"],
   "get-discord-polls": ["messages", "poll", "boundary"],
   "image-gen": ["edit", "base image", "feedback"],
@@ -31,12 +29,6 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
     ["discord"],
     ["channel", "allowlist"]
   ],
-  "continue-from-result": [
-    ["continue", "start", "improve"],
-    ["previous", "latest", "last"],
-    ["result", "image"],
-    ["round", "discord"]
-  ],
   "discord-image-paste": [["paste", "attach", "upload"], ["discord"], ["image", "clipboard"]],
   "get-discord-polls": [["collect", "scan", "close"], ["message", "poll", "feedback"]],
   "image-gen": [["edit", "generate", "publish"], ["image"], ["feedback", "poll"]],
@@ -46,11 +38,6 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
 
 const REQUIRED_COMMANDS: Record<(typeof EXPECTED_SKILLS)[number], readonly string[]> = {
   "configure-discord-channel": ["configure:channel"],
-  "continue-from-result": [
-    "prepare-continuation",
-    "confirm-base-submission",
-    "mark-attention"
-  ],
   "discord-image-paste": [],
   "get-discord-polls": [
     "plan-next",
@@ -177,7 +164,6 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     }
     if (
       (skillName === "submit-base-image" ||
-        skillName === "continue-from-result" ||
         skillName === "image-gen" ||
         skillName === "round-start") &&
       !skillMarkdown.includes(".state/rounds/<round-id>/")
@@ -187,7 +173,6 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     if (skillName === "round-start") {
       for (const childSkill of [
         "configure-discord-channel",
-        "continue-from-result",
         "discord-image-paste",
         "submit-base-image",
         "get-discord-polls",
@@ -215,18 +200,10 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
       }
     }
     if (
-      (skillName === "submit-base-image" ||
-        skillName === "continue-from-result" ||
-        skillName === "image-gen") &&
+      (skillName === "submit-base-image" || skillName === "image-gen") &&
       !skillMarkdown.includes("skills/discord-image-paste/SKILL.md")
     ) {
       issues.push(`${skillName}: shared Discord clipboard-paste skill is not referenced.`);
-    }
-    if (
-      skillName === "continue-from-result" &&
-      !skillMarkdown.includes("skills/round-start/SKILL.md")
-    ) {
-      issues.push("continue-from-result: round-start delegation is missing.");
     }
     if (
       skillName === "get-discord-polls" &&
