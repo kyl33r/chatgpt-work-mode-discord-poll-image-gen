@@ -1,4 +1,5 @@
 import { normalizeDiscordChannelUrl } from "../config/discord-channel-allowlist.js";
+import { DISCORD_CONVERSATION_PROVIDER } from "../constants.js";
 
 declare const conversationDestination: unique symbol;
 
@@ -71,7 +72,7 @@ function channelParts(channelUrl: string): { serverId: string; channelId: string
 }
 
 function toConversationDestination({ serverId, channelId }: { serverId: string; channelId: string }): ConversationDestination {
-  return `discord:${serverId}:${channelId}` as ConversationDestination;
+  return `${DISCORD_CONVERSATION_PROVIDER}:${serverId}:${channelId}` as ConversationDestination;
 }
 
 function isServerChannelPair(value: unknown): value is { serverId: string; channelId: string } {

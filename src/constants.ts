@@ -6,6 +6,7 @@ export const FEEDBACK_MESSAGE_LIMIT = 5;
 export const FEEDBACK_IMAGE_LIMIT_PER_MESSAGE = 2;
 export const FEEDBACK_IMAGE_LIMIT_PER_ROUND = 5;
 export const DISCORD_SCAN_INTERVAL_MS = 15_000;
+export const DISCORD_CONVERSATION_PROVIDER = "discord";
 export const SYNTHESIZED_PROMPT_MAX_CHARACTERS = 1_200;
 export const SUPPORTED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"] as const;
 export const SUPPORTED_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
