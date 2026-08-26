@@ -26,7 +26,7 @@ Never include a raw error, refusal explanation, provider response, local diagnos
 
 1. Run `plan-next` with `{ "roundId" }` and continue only on `begin-outcome-publication`.
 2. Run `prepare-publication` with `{ "roundId" }`. This persists `publishing-outcome` and returns either `post-result-image` with the exact Result Image or `post-status-message` with a controlled refusal/failure caption.
-3. Read `DISCORD_CHANNEL_URL` from `.env`; the CLI has already rejected a differing stored channel. Treat URLs in local command output as sensitive and do not repeat them in chat, durable logs, generated documents, or commits.
+3. The CLI reads `.state/discord-channel-allowlist.json` and has already rejected a differing stored channel. Treat URLs in local command output as sensitive and do not repeat them in chat, durable logs, generated documents, or commits.
 4. Open only that channel in the signed-in Discord browser.
 5. Obtain action-time confirmation before posting unless this exact live outcome post was explicitly requested in the current turn.
 6. Perform exactly the returned action. Never add raw diagnostics to its caption.

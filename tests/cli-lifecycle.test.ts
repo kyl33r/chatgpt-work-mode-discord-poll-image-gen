@@ -4,11 +4,16 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { executeCommand } from "../src/cli.js";
-import { JsonRoundArtifactStore } from "../src/round/round-artifact-store.js";
+import { executeCommand as executeRoundCommand } from "../src/cli.js";
+import {
+  JsonRoundArtifactStore,
+  type RoundArtifactStore
+} from "../src/round/round-artifact-store.js";
 import { JsonRoundStateStore } from "../src/round/round-state-store.js";
+import { InMemoryWorkflowLock } from "../src/workflow-lock.js";
 
 const temporaryDirectories: string[] = [];
+const ALLOWED_CHANNEL = "https://discord.test/channels/allowlisted";
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })));
@@ -27,12 +32,11 @@ describe("round CLI lifecycle", () => {
     const baseImagePath = await realpath(requestedBaseImagePath);
 
     expect(
-      await executeCommand(
+      await runCommand(
         "prepare-base-submission",
         {
           roundId: "R100",
-          baseImagePath,
-          channelUrl: "https://discord.test/channels/allowlisted"
+          baseImagePath
         },
         store,
         { artifacts: new JsonRoundArtifactStore(roundsRoot) }
@@ -42,7 +46,7 @@ describe("round CLI lifecycle", () => {
       operationId: "R100:submitting-base:1:469d047ee160"
     });
 
-    await executeCommand(
+    await runCommand(
       "confirm-base-submission",
       {
         roundId: "R100",
@@ -53,7 +57,7 @@ describe("round CLI lifecycle", () => {
     );
 
     expect(
-      await executeCommand(
+      await runCommand(
         "collect-messages",
         {
           roundId: "R100",
@@ -76,11 +80,11 @@ describe("round CLI lifecycle", () => {
       roundId: "R100"
     });
 
-    expect(await executeCommand("plan-next", { roundId: "R100" }, store)).toEqual({
+    expect(await runCommand("plan-next", { roundId: "R100" }, store)).toEqual({
       type: "synthesize-feedback"
     });
     expect(
-      await executeCommand("prepare-prompt-synthesis", { roundId: "R100" }, store)
+      await runCommand("prepare-prompt-synthesis", { roundId: "R100" }, store)
     ).toMatchObject({
       action: "synthesize-prompt",
       roundId: "R100",
@@ -92,7 +96,7 @@ describe("round CLI lifecycle", () => {
       "Apply all five requested visual changes as one coherent edit.\n" +
       "Preserve unrelated content. Produce exactly one edited image.";
     expect(
-      await executeCommand(
+      await runCommand(
         "confirm-synthesized-prompt",
         { roundId: "R100", synthesizedPrompt },
         store
@@ -106,12 +110,12 @@ describe("round CLI lifecycle", () => {
         "===== POLL CLOSED: R100 =====\nFinal image prompt:\n" + synthesizedPrompt
     });
 
-    await executeCommand(
+    await runCommand(
       "confirm-collection-closed",
       { roundId: "R100", closedMessageUrl: "https://discord.test/messages/closed" },
       store
     );
-    expect(await executeCommand("prepare-generation", { roundId: "R100" }, store)).toEqual({
+    expect(await runCommand("prepare-generation", { roundId: "R100" }, store)).toEqual({
       action: "generate-image",
       operationId: "R100:generating:1:16e1daee7f6b",
       roundId: "R100",
@@ -122,14 +126,14 @@ describe("round CLI lifecycle", () => {
     const resultImagePath = join(roundCapsule, "result-image.png");
     await writeFile(resultImagePath, "test result fixture", "utf8");
     const stagedResultImagePath = await realpath(resultImagePath);
-    await executeCommand(
+    await runCommand(
       "confirm-generation",
       { roundId: "R100", outcome: "succeeded", resultImagePath },
       store,
       { artifacts: new JsonRoundArtifactStore(roundsRoot) }
     );
     expect(
-      await executeCommand("prepare-publication", { roundId: "R100" }, store, {
+      await runCommand("prepare-publication", { roundId: "R100" }, store, {
         artifacts: new JsonRoundArtifactStore(roundsRoot)
       })
     ).toMatchObject({
@@ -138,13 +142,13 @@ describe("round CLI lifecycle", () => {
       resultImagePath: stagedResultImagePath,
       caption: "===== RESULT: R100 ====="
     });
-    await executeCommand(
+    await runCommand(
       "confirm-publication",
       { roundId: "R100", outcomeMessageUrl: "https://discord.test/messages/result" },
       store
     );
 
-    expect(await executeCommand("plan-next", { roundId: "R100" }, store)).toEqual({
+    expect(await runCommand("plan-next", { roundId: "R100" }, store)).toEqual({
       type: "none",
       reason: "Round is already completed."
     });
@@ -155,3 +159,19 @@ describe("round CLI lifecycle", () => {
     });
   });
 });
+
+function runCommand(
+  command: string,
+  payload: unknown,
+  store: JsonRoundStateStore,
+  options: { artifacts?: RoundArtifactStore } = {}
+) {
+  return executeRoundCommand(command, payload, store, {
+    allowlist: {
+      getAll: async () => [ALLOWED_CHANNEL],
+      replace: async () => undefined
+    },
+    workflowLock: new InMemoryWorkflowLock(),
+    ...options
+  });
+}

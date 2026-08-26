@@ -9,7 +9,7 @@ Turn visible bounded Discord messages into structured observations for the deter
 
 ## Scan and collect
 
-All commands use `npm run round -- <command> < .runtime/<command>.json`. Read `DISCORD_CHANNEL_URL` only from `.env`. Treat URLs and message text in local command output as sensitive: never repeat them in ChatGPT, logs, documents, commits, or unrelated Discord posts.
+All commands use `npm run round -- <command> < .runtime/<command>.json`. The command reads the sole channel from `.state/discord-channel-allowlist.json`. Treat URLs and message text in local command output as sensitive: never repeat them in ChatGPT, logs, documents, commits, or unrelated Discord posts.
 
 1. Run `plan-next` with `{ "roundId" }`. Continue only on `scan-messages`; stop on `needs-attention`, `none`, or an unexpected action.
 2. Run `get-round` with `{ "roundId" }` and require its stored channel to match the local allowlist.

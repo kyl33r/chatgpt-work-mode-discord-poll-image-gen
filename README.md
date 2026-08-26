@@ -12,6 +12,7 @@ Canonical skill source lives under:
 
 ```text
 skills/
+├── configure-discord-channel/
 ├── round-start/
 ├── submit-base-image/
 ├── get-discord-polls/
@@ -33,7 +34,7 @@ Participant reference images, native voting, and subsequent edit rounds are defe
 
 ## Local state
 
-The first implementation persists each round independently beneath `.state/rounds/<round-id>/`, with its own `round.json`, Base Image, Result Image, and migration backups. Updating one round never rewrites another round's files. `.runtime/` contains only disposable command payloads. CLI and domain behavior use replaceable `RoundStateStore` and `RoundArtifactStore` interfaces; a local SQLite state adapter can implement the same state contract if real concurrency, transactional, query, recovery, or performance needs demonstrate that JSON is no longer suitable.
+The first implementation persists the private Discord Channel Allowlist in `.state/discord-channel-allowlist.json` and each round independently beneath `.state/rounds/<round-id>/`, with its own `round.json`, Base Image, Result Image, and migration backups. Updating one round never rewrites another round's files. `.runtime/` contains only disposable command payloads. CLI and domain behavior use replaceable store interfaces; a local SQLite state adapter can implement the same contracts if real concurrency, transactional, query, recovery, or performance needs demonstrate that JSON is no longer suitable.
 
 ## Local verification
 
@@ -57,6 +58,7 @@ See [Discord setup](docs/discord-setup.md) before running the supervised browser
 - [ADR 0004: durable state under `.state/`](docs/adr/0004-store-durable-round-state-under-state.md)
 - [ADR 0005: persist one public synthesized prompt](docs/adr/0005-persist-one-public-synthesized-prompt.md)
 - [ADR 0006: isolated storage-neutral round state](docs/adr/0006-isolate-round-state-behind-storage-interface.md)
+- [ADR 0007: JSON Discord Channel Allowlist](docs/adr/0007-store-discord-channel-allowlist-in-state.md)
 - [Isolated Round State Capsules design](docs/superpowers/specs/2026-08-26-isolated-round-state-capsules-design.md)
 
 The existing bot-based experiment remains separate in `kyl33r/discord-image-feedback-relay`.

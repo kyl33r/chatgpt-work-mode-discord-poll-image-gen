@@ -4,12 +4,17 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { executeCommand } from "../src/cli.js";
-import { JsonRoundArtifactStore } from "../src/round/round-artifact-store.js";
+import { executeCommand as executeRoundCommand } from "../src/cli.js";
+import {
+  JsonRoundArtifactStore,
+  type RoundArtifactStore
+} from "../src/round/round-artifact-store.js";
 import { applyRoundEvent, createRound } from "../src/round/round-state.js";
 import { JsonRoundStateStore } from "../src/round/round-state-store.js";
+import { InMemoryWorkflowLock } from "../src/workflow-lock.js";
 
 const temporaryDirectories: string[] = [];
+const ALLOWED_CHANNEL = "https://discord.test/channels/allowlisted";
 const SYNTHESIZED_PROMPT =
   "Edit the supplied base image using this synthesized participant feedback:\n" +
   "Apply all five requested visual changes as one coherent edit.\n" +
@@ -54,12 +59,11 @@ describe("executeCommand", () => {
     );
 
     expect(
-      await executeCommand(
+      await runCommand(
         "prepare-base-submission",
         {
           roundId: "RSTART",
-          baseImagePath,
-          channelUrl: "https://discord.test/channels/allowlisted"
+          baseImagePath
         },
         store,
         { artifacts: new JsonRoundArtifactStore(roundsRoot) }
@@ -72,6 +76,7 @@ describe("executeCommand", () => {
     });
     expect(await store.get("RSTART")).toMatchObject({
       phase: "submitting-base",
+      channelUrl: ALLOWED_CHANNEL,
       messageLimit: 5,
       capturedMessages: []
     });
@@ -80,7 +85,7 @@ describe("executeCommand", () => {
     );
 
     expect(
-      await executeCommand(
+      await runCommand(
         "confirm-base-submission",
         {
           roundId: "RSTART",
@@ -92,13 +97,36 @@ describe("executeCommand", () => {
     ).toEqual({ action: "recorded", roundId: "RSTART", phase: "collecting-messages" });
   });
 
+  it("rejects a caller-supplied channel instead of bypassing the allowlist", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "feedback-round-cli-"));
+    temporaryDirectories.push(directory);
+    const roundsRoot = join(directory, "rounds");
+    const roundCapsule = join(roundsRoot, "RINJECTED");
+    await mkdir(roundCapsule, { recursive: true });
+    const baseImagePath = join(roundCapsule, "base-image.png");
+    await writeFile(baseImagePath, "image", "utf8");
+
+    await expect(
+      runCommand(
+        "prepare-base-submission",
+        {
+          roundId: "RINJECTED",
+          baseImagePath,
+          channelUrl: "https://discord.test/channels/unexpected"
+        },
+        new JsonRoundStateStore(roundsRoot),
+        { artifacts: new JsonRoundArtifactStore(roundsRoot) }
+      )
+    ).rejects.toThrow("The round channel is derived from the configured Discord allowlist.");
+  });
+
   it("waits for five messages, deduplicates rescans, then freezes and closes", async () => {
     const store = await createStore();
     await store.save(collectingRound("R001"));
     const firstFour = [1, 2, 3, 4].map(observation);
 
     expect(
-      await executeCommand(
+      await runCommand(
         "collect-messages",
         {
           roundId: "R001",
@@ -116,7 +144,7 @@ describe("executeCommand", () => {
     });
 
     expect(
-      await executeCommand(
+      await runCommand(
         "collect-messages",
         {
           roundId: "R001",
@@ -135,14 +163,14 @@ describe("executeCommand", () => {
       capturedMessages: [1, 2, 3, 4, 5].map(captured)
     });
 
-    expect(await executeCommand("prepare-prompt-synthesis", { roundId: "R001" }, store)).toEqual({
+    expect(await runCommand("prepare-prompt-synthesis", { roundId: "R001" }, store)).toEqual({
       action: "synthesize-prompt",
       roundId: "R001",
       feedbackTexts: [1, 2, 3, 4, 5].map((index) => `random message ${index}`)
     });
 
     expect(
-      await executeCommand(
+      await runCommand(
         "confirm-synthesized-prompt",
         { roundId: "R001", synthesizedPrompt: SYNTHESIZED_PROMPT },
         store
@@ -162,7 +190,7 @@ describe("executeCommand", () => {
     });
 
     expect(
-      await executeCommand(
+      await runCommand(
         "confirm-collection-closed",
         { roundId: "R001", closedMessageUrl: "closed-message" },
         store
@@ -175,7 +203,7 @@ describe("executeCommand", () => {
     await store.save(collectingRound("R001"));
 
     expect(
-      await executeCommand(
+      await runCommand(
         "collect-messages",
         {
           roundId: "R001",
@@ -216,7 +244,7 @@ describe("executeCommand", () => {
     });
     await store.save(round);
 
-    expect(await executeCommand("prepare-generation", { roundId: "RGEN" }, store)).toEqual({
+    expect(await runCommand("prepare-generation", { roundId: "RGEN" }, store)).toEqual({
       action: "generate-image",
       operationId: "RGEN:generating:1:1822396ccc5e",
       roundId: "RGEN",
@@ -230,10 +258,10 @@ describe("executeCommand", () => {
     const store = await createStore();
     const round = readyRound("RREFUSED");
     await store.save(round);
-    await executeCommand("prepare-generation", { roundId: "RREFUSED" }, store);
+    await runCommand("prepare-generation", { roundId: "RREFUSED" }, store);
 
     expect(
-      await executeCommand(
+      await runCommand(
         "confirm-generation",
         {
           roundId: "RREFUSED",
@@ -245,7 +273,7 @@ describe("executeCommand", () => {
     ).toEqual({ action: "recorded", roundId: "RREFUSED", phase: "outcome-ready" });
 
     expect(
-      await executeCommand("prepare-publication", { roundId: "RREFUSED" }, store)
+      await runCommand("prepare-publication", { roundId: "RREFUSED" }, store)
     ).toEqual({
       action: "post-status-message",
       operationId: "RREFUSED:publishing-outcome:1:469d047ee160",
@@ -259,15 +287,15 @@ describe("executeCommand", () => {
   it("publishes a controlled non-refusal failure", async () => {
     const store = await createStore();
     await store.save(readyRound("RFAILED"));
-    await executeCommand("prepare-generation", { roundId: "RFAILED" }, store);
-    await executeCommand(
+    await runCommand("prepare-generation", { roundId: "RFAILED" }, store);
+    await runCommand(
       "confirm-generation",
       { roundId: "RFAILED", outcome: "failed" },
       store
     );
 
     expect(
-      await executeCommand("prepare-publication", { roundId: "RFAILED" }, store)
+      await runCommand("prepare-publication", { roundId: "RFAILED" }, store)
     ).toMatchObject({
       action: "post-status-message",
       caption: "===== GENERATION FAILED: RFAILED ===== — No image was produced."
@@ -278,7 +306,7 @@ describe("executeCommand", () => {
     const store = await createStore();
     await store.save({ ...collectingRound("RPAUSE"), phase: "closing-collection" });
 
-    expect(await executeCommand("plan-next", { roundId: "RPAUSE" }, store)).toEqual({
+    expect(await runCommand("plan-next", { roundId: "RPAUSE" }, store)).toEqual({
       type: "needs-attention",
       reason: "The collection-closed marker may already have been posted; reconcile it manually."
     });
@@ -293,13 +321,13 @@ describe("executeCommand", () => {
     const collectingStore = await createStore();
     await collectingStore.save(collectingRound("RCANCEL"));
     expect(
-      await executeCommand("stop-round", { roundId: "RCANCEL" }, collectingStore)
+      await runCommand("stop-round", { roundId: "RCANCEL" }, collectingStore)
     ).toEqual({ action: "recorded", roundId: "RCANCEL", phase: "stopped" });
 
     const ambiguousStore = await createStore();
     await ambiguousStore.save({ ...collectingRound("RAMBIGUOUS"), phase: "generating" });
     expect(
-      await executeCommand("stop-round", { roundId: "RAMBIGUOUS" }, ambiguousStore)
+      await runCommand("stop-round", { roundId: "RAMBIGUOUS" }, ambiguousStore)
     ).toEqual({
       action: "needs-attention",
       roundId: "RAMBIGUOUS",
@@ -312,7 +340,7 @@ describe("executeCommand", () => {
     const readyStore = await createStore();
     await readyStore.save(readyRound("RTOOLATE"));
     await expect(
-      executeCommand("stop-round", { roundId: "RTOOLATE" }, readyStore)
+      runCommand("stop-round", { roundId: "RTOOLATE" }, readyStore)
     ).rejects.toThrow("Round RTOOLATE can only be cancelled before the message threshold.");
   });
 
@@ -327,12 +355,11 @@ describe("executeCommand", () => {
     const store = new JsonRoundStateStore(stagingRoot);
 
     await expect(
-      executeCommand(
+      runCommand(
         "prepare-base-submission",
         {
           roundId: "ROUTSIDE",
-          baseImagePath: outsideImagePath,
-          channelUrl: "https://discord.test/channels/allowlisted"
+          baseImagePath: outsideImagePath
         },
         store,
         { artifacts: new JsonRoundArtifactStore(stagingRoot) }
@@ -344,12 +371,11 @@ describe("executeCommand", () => {
     const linkedImagePath = join(linkedRoundCapsule, "linked.png");
     await symlink(outsideImagePath, linkedImagePath);
     await expect(
-      executeCommand(
+      runCommand(
         "prepare-base-submission",
         {
           roundId: "RSYMLINK",
-          baseImagePath: linkedImagePath,
-          channelUrl: "https://discord.test/channels/allowlisted"
+          baseImagePath: linkedImagePath
         },
         store,
         { artifacts: new JsonRoundArtifactStore(stagingRoot) }
@@ -366,10 +392,10 @@ describe("executeCommand", () => {
     await writeFile(outsideImagePath, "image", "utf8");
     const store = new JsonRoundStateStore(resultRoot);
     await store.save(readyRound("RRESULT"));
-    await executeCommand("prepare-generation", { roundId: "RRESULT" }, store);
+    await runCommand("prepare-generation", { roundId: "RRESULT" }, store);
 
     await expect(
-      executeCommand(
+      runCommand(
         "confirm-generation",
         { roundId: "RRESULT", outcome: "succeeded", resultImagePath: outsideImagePath },
         store,
@@ -382,7 +408,7 @@ describe("executeCommand", () => {
     const otherRoundImage = join(otherCapsule, "result-image.png");
     await writeFile(otherRoundImage, "image", "utf8");
     await expect(
-      executeCommand(
+      runCommand(
         "confirm-generation",
         { roundId: "RRESULT", outcome: "succeeded", resultImagePath: otherRoundImage },
         store,
@@ -403,10 +429,8 @@ describe("executeCommand", () => {
     );
 
     await expect(
-      executeCommand("get-round", { roundId: "RCHANNEL" }, store, {
-        allowedChannelUrl: "https://discord.test/channels/allowlisted"
-      })
-    ).rejects.toThrow("Round channel does not match DISCORD_CHANNEL_URL.");
+      runCommand("get-round", { roundId: "RCHANNEL" }, store)
+    ).rejects.toThrow("Round channel does not match the configured Discord allowlist.");
   });
 });
 
@@ -464,4 +488,20 @@ async function createStore(): Promise<JsonRoundStateStore> {
   const directory = await mkdtemp(join(tmpdir(), "feedback-round-cli-"));
   temporaryDirectories.push(directory);
   return new JsonRoundStateStore(join(directory, "rounds"));
+}
+
+function runCommand(
+  command: string,
+  payload: unknown,
+  store: JsonRoundStateStore,
+  options: { artifacts?: RoundArtifactStore } = {}
+) {
+  return executeRoundCommand(command, payload, store, {
+    allowlist: {
+      getAll: async () => [ALLOWED_CHANNEL],
+      replace: async () => undefined
+    },
+    workflowLock: new InMemoryWorkflowLock(),
+    ...options
+  });
 }

@@ -7,10 +7,10 @@ This POC uses the signed-in Discord web UI. It does not need a bot, webhook, Dis
 1. Choose one private test channel, group DM, or DM.
 2. Make sure the participating people can view messages, upload images, create polls, and vote there.
 3. Sign into Discord manually in the ChatGPT Work browser.
-4. Open the exact target conversation and copy its full `https://discord.com/channels/...` URL.
-5. Copy `.env.example` to `.env` and set `DISCORD_CHANNEL_URL` to that URL.
+4. Open the exact target conversation in the in-app browser.
+5. Ask Codex to use `$configure-discord-channel` for the currently opened channel.
 
-The `.env` file is ignored by Git. Never place a Discord password, token, cookie, browser profile, or other credential in it.
+The skill verifies the controlled browser tab and atomically stores exactly one private URL in gitignored `.state/discord-channel-allowlist.json`. It never prints or commits the URL. Never place a Discord password, token, cookie, browser profile, or other credential in the project.
 
 ## Prepare the project
 
@@ -41,9 +41,11 @@ The skills request confirmation at live posting boundaries when required. If Dis
 
 ## Local state and troubleshooting
 
-Restart-critical state lives in isolated `.state/rounds/<round-id>/` capsules inside this worktree. Each capsule owns one `round.json`, its Base Image, Result Image, and migration backups; updating one cannot overwrite another. All are ignored by Git and contain no credentials. `.runtime/` contains only disposable command payloads.
+Restart-critical state lives inside this worktree. `.state/discord-channel-allowlist.json` owns the single private destination, while isolated `.state/rounds/<round-id>/` capsules own each round's `round.json`, Base Image, Result Image, and migration backups. All are ignored by Git and contain no credentials. `.runtime/` contains only disposable command payloads.
 
 - Do not delete or hand-edit state during an active round.
+- Channel changes are locked until every round is terminal.
+- For the one pre-allowlist active round only, run `npm run migrate:channel-allowlist`; later missing configuration must be restored explicitly with the configuration skill.
 - Run `npm run round -- plan-next` with a JSON payload containing the round ID to inspect the next safe action.
 - A `needs-attention` round requires manual reconciliation before any external action is repeated.
 - Run the full tests after changing a skill or shared command.

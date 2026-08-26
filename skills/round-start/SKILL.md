@@ -9,7 +9,7 @@ Run exactly one persisted Feedback Round. Never access Discord credentials or in
 
 ## Orchestrate
 
-1. Work from the project root. Read `DISCORD_CHANNEL_URL` only from `.env`; never print it or any private message identity.
+1. Work from the project root. If the owner asks to use or switch to the currently opened Discord channel, read `skills/configure-discord-channel/SKILL.md` completely and follow it before starting a new round. Otherwise use the sole channel already persisted in `.state/discord-channel-allowlist.json`. For a pre-allowlist active round only, run `npm run migrate:channel-allowlist` once; it records non-sensitive migration provenance and never returns the URL. Never infer or recreate a missing allowlist after that migration is consumed. Never print the channel or any private message identity.
 2. Identify the active round from the owner's request and the durable capsules beneath `.state/rounds/`. If there is no active round, read `skills/submit-base-image/SKILL.md` completely and follow it once with the supplied Base Image. Never reuse or overwrite another round's capsule.
 3. Put only disposable command payloads beneath `.runtime/`. Run `npm run round -- plan-next` with the round ID after every confirmed boundary.
 4. For `scan-messages`, read `skills/get-discord-polls/SKILL.md` completely and follow its bounded collection procedure. Wait only for the returned interval while this ChatGPT task remains active.

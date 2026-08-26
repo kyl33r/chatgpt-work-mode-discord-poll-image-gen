@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EXPECTED_SKILLS = [
+  "configure-discord-channel",
   "get-discord-polls",
   "image-gen",
   "round-start",
@@ -10,6 +11,7 @@ const EXPECTED_SKILLS = [
 ] as const;
 
 const DISCOVERY_CUES: Record<(typeof EXPECTED_SKILLS)[number], readonly string[]> = {
+  "configure-discord-channel": ["configure", "discord", "channel", "allowlist"],
   "get-discord-polls": ["messages", "poll", "boundary"],
   "image-gen": ["edit", "base image", "feedback"],
   "round-start": ["start", "resume", "discord"],
@@ -20,6 +22,11 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
   (typeof EXPECTED_SKILLS)[number],
   readonly (readonly string[])[]
 > = {
+  "configure-discord-channel": [
+    ["configure", "select", "switch", "use"],
+    ["discord"],
+    ["channel", "allowlist"]
+  ],
   "get-discord-polls": [["collect", "scan", "close"], ["message", "poll", "feedback"]],
   "image-gen": [["edit", "generate", "publish"], ["image"], ["feedback", "poll"]],
   "round-start": [["start", "resume", "run"], ["round", "workflow"], ["discord"]],
@@ -27,6 +34,7 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
 };
 
 const REQUIRED_COMMANDS: Record<(typeof EXPECTED_SKILLS)[number], readonly string[]> = {
+  "configure-discord-channel": ["configure:channel"],
   "get-discord-polls": [
     "plan-next",
     "get-round",
@@ -37,6 +45,7 @@ const REQUIRED_COMMANDS: Record<(typeof EXPECTED_SKILLS)[number], readonly strin
     "mark-attention"
   ],
   "round-start": [
+    "migrate:channel-allowlist",
     "plan-next",
     "prepare-prompt-synthesis",
     "confirm-synthesized-prompt",
@@ -94,7 +103,8 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     "`.agents/skills/` is only a Codex discovery index of symlinks",
     "Never put raw image-generation errors",
     "storage-neutral `RoundStateStore` and `RoundArtifactStore` interfaces",
-    "Persist each Feedback Round in its own `.state/rounds/<round-id>/` capsule"
+    "Persist each Feedback Round in its own `.state/rounds/<round-id>/` capsule",
+    "Persist the single Discord Channel Allowlist in `.state/discord-channel-allowlist.json`"
   ]) {
     if (!agentInstructions.includes(requiredPolicy)) {
       issues.push(`AGENTS.md is missing required policy: ${requiredPolicy}`);
@@ -125,7 +135,10 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
         issues.push(`${skillName}: description must include the discovery cue ${JSON.stringify(cue)}.`);
       }
     }
-    if (!skillMarkdown.includes("npm run round")) {
+    if (
+      skillName !== "configure-discord-channel" &&
+      !skillMarkdown.includes("npm run round")
+    ) {
       issues.push(`${skillName}: deterministic CLI boundary is missing.`);
     }
     for (const command of REQUIRED_COMMANDS[skillName]) {
@@ -153,7 +166,12 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
       issues.push(`${skillName}: isolated Round State Capsule path is missing.`);
     }
     if (skillName === "round-start") {
-      for (const childSkill of ["submit-base-image", "get-discord-polls", "image-gen"]) {
+      for (const childSkill of [
+        "configure-discord-channel",
+        "submit-base-image",
+        "get-discord-polls",
+        "image-gen"
+      ]) {
         if (!skillMarkdown.includes(`skills/${childSkill}/SKILL.md`)) {
           issues.push(`round-start: child skill ${childSkill} is not referenced.`);
         }

@@ -12,10 +12,15 @@ describe("project skills", () => {
   });
 
   it.each([
+    ["configure-discord-channel", "$configure-discord-channel"],
     ["submit-base-image", "$submit-base-image"],
     ["get-discord-polls", "$get-discord-polls"],
     ["image-gen", "$image-gen"],
     ["round-start", "$round-start"],
+    [
+      "configure-discord-channel",
+      "Configure the currently opened Discord channel as the local allowlisted destination."
+    ],
     ["submit-base-image", "Post this base image to Discord for participant feedback."],
     ["get-discord-polls", "Scan the Discord text poll for its first five messages."],
     ["image-gen", "Generate an image edit from the winning poll feedback."],

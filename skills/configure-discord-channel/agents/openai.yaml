@@ -1,0 +1,4 @@
+interface:
+  display_name: "Configure Discord Channel"
+  short_description: "Safely select the local Discord channel"
+  default_prompt: "Use $configure-discord-channel to make my currently opened Discord channel the local allowlisted destination."

@@ -36,6 +36,10 @@ _Avoid_: Runtime payload, database
 The isolated durable state owned by one Feedback Round. A capsule never shares a mutable JSON record or image artifact with another round.
 _Avoid_: Global round file, shared state bucket
 
+**Discord Channel Allowlist**:
+The single owner-selected Discord channel URL persisted privately in `.state/discord-channel-allowlist.json` and enforced by every round command.
+_Avoid_: Hardcoded channel, environment channel
+
 **Result Image**:
 The single edited image produced when the image-edit attempt succeeds.
 _Avoid_: Generation, output asset

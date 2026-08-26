@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 
 import {
+  DISCORD_CHANNEL_ALLOWLIST_PATH,
   DISCORD_SCAN_INTERVAL_MS,
   FEEDBACK_MESSAGE_LIMIT,
   FINAL_IMAGE_PROMPT_LABEL,
@@ -11,8 +12,12 @@ import {
   POLL_CLOSED_MARKER_TEMPLATE,
   POLL_START_MARKER_TEMPLATE,
   RESULT_MARKER_TEMPLATE,
-  ROUND_STATE_ROOT
+  ROUND_STATE_ROOT,
+  WORKFLOW_LOCK_PATH
 } from "./constants.js";
+import { JsonDiscordChannelAllowlistStore } from "./config/discord-channel-allowlist.js";
+import type { DiscordChannelAllowlistStore } from "./config/discord-channel-allowlist.js";
+import { resolveDiscordChannel } from "./config/resolve-discord-channel.js";
 import {
   collectMessages,
   MessageCollectionAmbiguityError,
@@ -34,24 +39,46 @@ import {
   JsonRoundStateStore,
   type RoundStateStore
 } from "./round/round-state-store.js";
+import { FileWorkflowLock, type WorkflowLock } from "./workflow-lock.js";
 
-interface CommandOptions {
-  allowedChannelUrl?: string;
+export interface CommandDependencies {
+  allowlist: DiscordChannelAllowlistStore;
   artifacts?: RoundArtifactStore;
+  workflowLock: WorkflowLock;
 }
 
 export async function executeCommand(
   command: string,
   payload: unknown,
   store: RoundStateStore,
-  options: CommandOptions = {}
+  dependencies: CommandDependencies
 ): Promise<unknown> {
-  await assertAllowedChannel(command, payload, store, options.allowedChannelUrl);
+  return dependencies.workflowLock.runExclusive(async () => {
+    const allowedChannelUrl = await resolveDiscordChannel(dependencies.allowlist);
+    return executeLockedCommand(
+      command,
+      payload,
+      store,
+      allowedChannelUrl,
+      dependencies.artifacts
+    );
+  });
+}
+
+async function executeLockedCommand(
+  command: string,
+  payload: unknown,
+  store: RoundStateStore,
+  allowedChannelUrl: string,
+  artifacts: RoundArtifactStore | undefined
+): Promise<unknown> {
+  await assertAllowedChannel(command, payload, store, allowedChannelUrl);
   if (command === "prepare-base-submission") {
     return prepareBaseSubmission(
       payload,
       store,
-      requireArtifactStore(options.artifacts)
+      requireArtifactStore(artifacts),
+      allowedChannelUrl
     );
   }
   if (command === "confirm-base-submission") {
@@ -86,11 +113,11 @@ export async function executeCommand(
     return confirmGeneration(
       payload,
       store,
-      options.artifacts
+      artifacts
     );
   }
   if (command === "prepare-publication") {
-    return preparePublication(payload, store, options.artifacts);
+    return preparePublication(payload, store, artifacts);
   }
   if (command === "confirm-publication") {
     return applyNamedEvent(payload, store, (record) => ({
@@ -121,28 +148,26 @@ async function assertAllowedChannel(
   command: string,
   payload: unknown,
   store: RoundStateStore,
-  allowedChannelUrl: string | undefined
+  allowedChannelUrl: string
 ): Promise<void> {
-  if (!allowedChannelUrl) {
-    return;
-  }
   const record = requireRecord(payload, "payload");
   if (command === "prepare-base-submission") {
-    if (requireString(record.channelUrl, "payload.channelUrl") !== allowedChannelUrl) {
-      throw new Error("Round channel does not match DISCORD_CHANNEL_URL.");
+    if ("channelUrl" in record) {
+      throw new Error("The round channel is derived from the configured Discord allowlist.");
     }
     return;
   }
   const round = await store.get(requireString(record.roundId, "payload.roundId"));
   if (round && round.channelUrl !== allowedChannelUrl) {
-    throw new Error("Round channel does not match DISCORD_CHANNEL_URL.");
+    throw new Error("Round channel does not match the configured Discord allowlist.");
   }
 }
 
 async function prepareBaseSubmission(
   payload: unknown,
   store: RoundStateStore,
-  artifacts: RoundArtifactStore
+  artifacts: RoundArtifactStore,
+  allowedChannelUrl: string
 ): Promise<unknown> {
   const record = requireRecord(payload, "payload");
   const roundId = requireString(record.roundId, "payload.roundId");
@@ -163,7 +188,7 @@ async function prepareBaseSubmission(
   const draft = createRound({
     id: roundId,
     baseImagePath,
-    channelUrl: requireString(record.channelUrl, "payload.channelUrl"),
+    channelUrl: allowedChannelUrl,
     messageLimit: FEEDBACK_MESSAGE_LIMIT
   });
   const submitting = applyRoundEvent(draft, { type: "base-submission-started" });
@@ -563,17 +588,15 @@ async function main(): Promise<void> {
   for await (const chunk of process.stdin) {
     rawPayload += chunk.toString();
   }
-  const allowedChannelUrl = process.env.DISCORD_CHANNEL_URL;
-  if (!allowedChannelUrl) {
-    throw new Error("DISCORD_CHANNEL_URL is required in the local .env file.");
-  }
+  const stateStore = new JsonRoundStateStore(ROUND_STATE_ROOT);
   const result = await executeCommand(
     command,
     JSON.parse(rawPayload) as unknown,
-    new JsonRoundStateStore(ROUND_STATE_ROOT),
+    stateStore,
     {
-      allowedChannelUrl,
-      artifacts: new JsonRoundArtifactStore(ROUND_STATE_ROOT)
+      allowlist: new JsonDiscordChannelAllowlistStore(DISCORD_CHANNEL_ALLOWLIST_PATH),
+      artifacts: new JsonRoundArtifactStore(ROUND_STATE_ROOT),
+      workflowLock: new FileWorkflowLock(WORKFLOW_LOCK_PATH)
     }
   );
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

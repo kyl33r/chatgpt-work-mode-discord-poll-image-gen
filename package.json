@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
-    "round": "tsx --env-file=.env src/cli.ts",
+    "configure:channel": "tsx src/configure-channel.ts",
+    "round": "tsx src/cli.ts",
     "migrate:state": "tsx src/migrate-state.ts",
+    "migrate:channel-allowlist": "tsx src/migrate-channel-allowlist.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "validate:skills": "tsx scripts/validate-skills.ts",
