@@ -45,11 +45,21 @@ describe("project skills", () => {
     expect(matchesSkillPrompt(skillName, prompt)).toBe(true);
   });
 
-  it("does not route the existing text-poll scan prompt to the conversation observer", () => {
-    const textPollPrompt = "Scan the Discord text poll for its first five messages.";
+  it.each([
+    "Scan the Discord text poll for its first five messages.",
+    "Scan the allowlisted Discord poll messages after this boundary.",
+    "Collect feedback messages in the allowlisted Discord channel after this boundary.",
+    "Close the Discord round poll after this boundary."
+  ])("routes poll or round collection prompt only to get-discord-polls: %s", (prompt) => {
+    expect(matchesSkillPrompt("get-discord-polls", prompt)).toBe(true);
+    expect(matchesSkillPrompt("observe-discord-conversation", prompt)).toBe(false);
+  });
 
-    expect(matchesSkillPrompt("get-discord-polls", textPollPrompt)).toBe(true);
-    expect(matchesSkillPrompt("observe-discord-conversation", textPollPrompt)).toBe(false);
+  it("routes a bounded allowlisted conversation observation only to the observer", () => {
+    const prompt = "Scan the allowlisted Discord conversation messages after this boundary.";
+
+    expect(matchesSkillPrompt("observe-discord-conversation", prompt)).toBe(true);
+    expect(matchesSkillPrompt("get-discord-polls", prompt)).toBe(false);
   });
 
   it.each([

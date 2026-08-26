@@ -40,7 +40,11 @@ const IMPLICIT_TRIGGER_GROUPS: Record<
     ["round", "discord"]
   ],
   "discord-image-paste": [["paste", "attach", "upload"], ["discord"], ["image", "clipboard"]],
-  "get-discord-polls": [["collect", "scan", "close"], ["message", "poll", "feedback"]],
+  "get-discord-polls": [
+    ["collect", "scan", "close"],
+    ["poll", "feedback"],
+    ["message", "poll", "feedback"]
+  ],
   "image-gen": [["edit", "generate", "publish"], ["image"], ["feedback", "poll"]],
   "observe-discord-conversation": [
     ["read", "observe", "scan"],
@@ -130,6 +134,7 @@ const OBSERVE_DISCORD_CONVERSATION_CONTRACTS = [
 ] as const;
 
 const OBSERVATION_SKILL_NAME = "observe-discord-conversation";
+const POLL_OR_ROUND_COLLECTION_PATTERN = /\b(?:poll|feedback|round|collection)\b/i;
 
 export function matchesSkillPrompt(skillName: string, prompt: string): boolean {
   if (!EXPECTED_SKILLS.includes(skillName as (typeof EXPECTED_SKILLS)[number])) {
@@ -139,6 +144,12 @@ export function matchesSkillPrompt(skillName: string, prompt: string): boolean {
     return true;
   }
   const normalizedPrompt = prompt.toLowerCase();
+  if (
+    skillName === "observe-discord-conversation" &&
+    POLL_OR_ROUND_COLLECTION_PATTERN.test(normalizedPrompt)
+  ) {
+    return false;
+  }
   return IMPLICIT_TRIGGER_GROUPS[skillName as (typeof EXPECTED_SKILLS)[number]].every((group) =>
     group.some((term) => normalizedPrompt.includes(term))
   );
