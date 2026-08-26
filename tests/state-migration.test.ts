@@ -72,6 +72,16 @@ describe("migrateSharedRoundState", () => {
     });
   });
 
+  it("rejects an incomplete destination even when round.json matches", async () => {
+    const paths = await createMigrationFixture();
+    await migrateSharedRoundState(paths);
+    await rm(join(paths.roundsRoot, "R001", "base-image.png"));
+
+    await expect(migrateSharedRoundState(paths)).rejects.toThrow(
+      "Existing Round State Capsule does not match the shared round."
+    );
+  });
+
   it("rejects an unsupported shared shape without a visible destination capsule", async () => {
     const paths = await createMigrationFixture({ phase: "collecting-messages" });
 

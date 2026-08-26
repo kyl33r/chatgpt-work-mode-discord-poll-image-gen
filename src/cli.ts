@@ -1,9 +1,6 @@
-import { realpath, stat } from "node:fs/promises";
-import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  BASE_IMAGE_STAGING_ROOT,
   DISCORD_SCAN_INTERVAL_MS,
   FEEDBACK_MESSAGE_LIMIT,
   FINAL_IMAGE_PROMPT_LABEL,
@@ -13,10 +10,8 @@ import {
   OPERATION_TURN_NUMBER,
   POLL_CLOSED_MARKER_TEMPLATE,
   POLL_START_MARKER_TEMPLATE,
-  RESULT_IMAGE_STAGING_ROOT,
   RESULT_MARKER_TEMPLATE,
-  ROUND_STATE_ROOT,
-  SUPPORTED_IMAGE_EXTENSIONS
+  ROUND_STATE_ROOT
 } from "./constants.js";
 import {
   collectMessages,
@@ -25,13 +20,16 @@ import {
 } from "./round/message-collector.js";
 import { createOperationId, planNextAction } from "./round/idempotency.js";
 import {
+  JsonRoundArtifactStore,
+  type RoundArtifactStore
+} from "./round/round-artifact-store.js";
+import {
   applyRoundEvent,
   createRound,
   type RoundEvent,
   type RoundPhase
 } from "./round/round-state.js";
 import { validateSynthesizedPrompt } from "./round/synthesized-prompt.js";
-import { roundCapsuleDirectory } from "./round/round-paths.js";
 import {
   JsonRoundStateStore,
   type RoundStateStore
@@ -39,7 +37,7 @@ import {
 
 interface CommandOptions {
   allowedChannelUrl?: string;
-  roundCapsulesRoot?: string;
+  artifacts?: RoundArtifactStore;
 }
 
 export async function executeCommand(
@@ -53,7 +51,7 @@ export async function executeCommand(
     return prepareBaseSubmission(
       payload,
       store,
-      options.roundCapsulesRoot ?? BASE_IMAGE_STAGING_ROOT
+      requireArtifactStore(options.artifacts)
     );
   }
   if (command === "confirm-base-submission") {
@@ -88,11 +86,11 @@ export async function executeCommand(
     return confirmGeneration(
       payload,
       store,
-      options.roundCapsulesRoot ?? RESULT_IMAGE_STAGING_ROOT
+      options.artifacts
     );
   }
   if (command === "prepare-publication") {
-    return preparePublication(payload, store);
+    return preparePublication(payload, store, options.artifacts);
   }
   if (command === "confirm-publication") {
     return applyNamedEvent(payload, store, (record) => ({
@@ -144,7 +142,7 @@ async function assertAllowedChannel(
 async function prepareBaseSubmission(
   payload: unknown,
   store: RoundStateStore,
-  baseImageStagingRoot: string
+  artifacts: RoundArtifactStore
 ): Promise<unknown> {
   const record = requireRecord(payload, "payload");
   const roundId = requireString(record.roundId, "payload.roundId");
@@ -152,21 +150,16 @@ async function prepareBaseSubmission(
     throw new Error(`Round already exists: ${roundId}`);
   }
   const activeRound = (await store.list()).find(
-    (round) => round.phase !== "completed" && round.phase !== "stopped"
+    (round) =>
+      round.phase !== "completed" &&
+      round.phase !== "stopped" &&
+      round.phase !== "needs-attention"
   );
   if (activeRound) {
     throw new Error(`An active round already exists: ${activeRound.id}`);
   }
   const requestedBaseImagePath = requireString(record.baseImagePath, "payload.baseImagePath");
-  await requireExistingImage(
-    requestedBaseImagePath,
-    "Base image must be an existing PNG, JPEG, or WebP file."
-  );
-  const baseImagePath = await requireStagedImagePath(
-    requestedBaseImagePath,
-    roundCapsuleDirectory(baseImageStagingRoot, roundId),
-    "Base image must be staged under the durable state directory."
-  );
+  const baseImagePath = await artifacts.acceptBaseImage(roundId, requestedBaseImagePath);
   const draft = createRound({
     id: roundId,
     baseImagePath,
@@ -338,7 +331,7 @@ async function prepareGeneration(payload: unknown, store: RoundStateStore): Prom
 async function confirmGeneration(
   payload: unknown,
   store: RoundStateStore,
-  resultImageStagingRoot: string
+  artifacts: RoundArtifactStore | undefined
 ): Promise<unknown> {
   const record = requireRecord(payload, "payload");
   const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
@@ -349,16 +342,11 @@ async function confirmGeneration(
   let event: RoundEvent;
   if (outcome === "succeeded") {
     const resultImagePath = requireString(record.resultImagePath, "payload.resultImagePath");
-    await requireExistingImage(
-      resultImagePath,
-      "Result image must be an existing PNG, JPEG, or WebP file."
-    );
     event = {
       type: "generation-succeeded",
-      resultImagePath: await requireStagedImagePath(
-        resultImagePath,
-        roundCapsuleDirectory(resultImageStagingRoot, round.id),
-        "Result image must be staged under the durable state directory."
+      resultImagePath: await requireArtifactStore(artifacts).acceptResultImage(
+        round.id,
+        resultImagePath
       )
     };
   } else if (outcome === "refused") {
@@ -373,16 +361,20 @@ async function confirmGeneration(
   return { action: "recorded", roundId: round.id, phase: outcomeReady.phase };
 }
 
-async function preparePublication(payload: unknown, store: RoundStateStore): Promise<unknown> {
+async function preparePublication(
+  payload: unknown,
+  store: RoundStateStore,
+  artifacts: RoundArtifactStore | undefined
+): Promise<unknown> {
   const record = requireRecord(payload, "payload");
   const round = await requireRound(store, requireString(record.roundId, "payload.roundId"));
   if (round.phase !== "outcome-ready" || !round.generationOutcome) {
     throw new Error(`Round ${round.id} has no confirmed outcome to publish.`);
   }
   if (round.generationOutcome.kind === "succeeded") {
-    await requireExistingImage(
-      round.generationOutcome.resultImagePath,
-      "Recorded result image is missing or unsupported."
+    await requireArtifactStore(artifacts).requireResultImage(
+      round.id,
+      round.generationOutcome.resultImagePath
     );
   }
   const publishing = applyRoundEvent(round, { type: "outcome-publication-started" });
@@ -472,44 +464,11 @@ async function applyNamedEvent(
   return { action: "recorded", roundId: round.id, phase: nextRound.phase };
 }
 
-async function requireExistingImage(path: string, errorMessage: string): Promise<void> {
-  let exists = false;
-  try {
-    exists = (await stat(path)).isFile();
-  } catch {
-    exists = false;
+function requireArtifactStore(artifacts: RoundArtifactStore | undefined): RoundArtifactStore {
+  if (!artifacts) {
+    throw new Error("A RoundArtifactStore is required for image commands.");
   }
-  const extension = extname(path).toLowerCase();
-  if (!exists || !SUPPORTED_IMAGE_EXTENSIONS.some((candidate) => candidate === extension)) {
-    throw new Error(errorMessage);
-  }
-}
-
-async function requireStagedImagePath(
-  path: string,
-  stagingRoot: string,
-  errorMessage: string
-): Promise<string> {
-  let resolvedPath: string;
-  let resolvedRoot: string;
-  try {
-    [resolvedPath, resolvedRoot] = await Promise.all([
-      realpath(resolve(path)),
-      realpath(resolve(stagingRoot))
-    ]);
-  } catch {
-    throw new Error(errorMessage);
-  }
-  const pathFromRoot = relative(resolvedRoot, resolvedPath);
-  if (
-    pathFromRoot.length === 0 ||
-    pathFromRoot === ".." ||
-    pathFromRoot.startsWith(`..${sep}`) ||
-    isAbsolute(pathFromRoot)
-  ) {
-    throw new Error(errorMessage);
-  }
-  return resolvedPath;
+  return artifacts;
 }
 
 interface CollectMessagesPayload {
@@ -612,7 +571,10 @@ async function main(): Promise<void> {
     command,
     JSON.parse(rawPayload) as unknown,
     new JsonRoundStateStore(ROUND_STATE_ROOT),
-    { allowedChannelUrl }
+    {
+      allowedChannelUrl,
+      artifacts: new JsonRoundArtifactStore(ROUND_STATE_ROOT)
+    }
   );
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }

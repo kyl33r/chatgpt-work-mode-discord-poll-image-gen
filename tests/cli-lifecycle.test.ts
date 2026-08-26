@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { executeCommand } from "../src/cli.js";
+import { JsonRoundArtifactStore } from "../src/round/round-artifact-store.js";
 import { JsonRoundStateStore } from "../src/round/round-state-store.js";
 
 const temporaryDirectories: string[] = [];
@@ -34,7 +35,7 @@ describe("round CLI lifecycle", () => {
           channelUrl: "https://discord.test/channels/allowlisted"
         },
         store,
-        { roundCapsulesRoot: roundsRoot }
+        { artifacts: new JsonRoundArtifactStore(roundsRoot) }
       )
     ).toMatchObject({
       action: "post-base-image",
@@ -125,10 +126,12 @@ describe("round CLI lifecycle", () => {
       "confirm-generation",
       { roundId: "R100", outcome: "succeeded", resultImagePath },
       store,
-      { roundCapsulesRoot: roundsRoot }
+      { artifacts: new JsonRoundArtifactStore(roundsRoot) }
     );
     expect(
-      await executeCommand("prepare-publication", { roundId: "R100" }, store)
+      await executeCommand("prepare-publication", { roundId: "R100" }, store, {
+        artifacts: new JsonRoundArtifactStore(roundsRoot)
+      })
     ).toMatchObject({
       action: "post-result-image",
       operationId: "R100:publishing-outcome:1:469d047ee160",

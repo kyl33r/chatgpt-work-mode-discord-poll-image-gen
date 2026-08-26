@@ -20,6 +20,18 @@ interface RoundStateStore {
 
 CLI commands and round-domain modules depend only on this interface. `JsonRoundStateStore` is the first adapter. A future `SqliteRoundStateStore` must implement the same observable contract: unique round identity, deterministic listing, per-round replacement, schema validation, and fail-closed malformed-state handling. Database selection must not change round phases, command payloads, browser boundaries, or public Discord messages.
 
+Image ownership is a separate injected boundary:
+
+```ts
+interface RoundArtifactStore {
+  acceptBaseImage(roundId: string, candidatePath: string): Promise<string>;
+  acceptResultImage(roundId: string, candidatePath: string): Promise<string>;
+  requireResultImage(roundId: string, storedPath: string): Promise<string>;
+}
+```
+
+`JsonRoundArtifactStore` enforces the capsule layout. The CLI composition root selects the JSON adapters; command behavior receives only the two interfaces and never computes a capsule path.
+
 ## JSON layout
 
 Schema version four stores one Round State Capsule per identifier:
@@ -42,7 +54,7 @@ A capsule directory may temporarily contain a staged Base Image before its first
 
 ## Round-scoped artifacts
 
-The Base Image and Result Image must resolve beneath the same capsule directory as their owning round. The CLI rejects cross-round paths, parent traversal, and symlink escapes. Disposable command inputs remain beneath `.runtime/` and are never part of durable state.
+The Base Image and Result Image must resolve beneath the same capsule directory as their owning round. The artifact adapter rejects cross-round paths, parent traversal, and symlink escapes. Disposable command inputs remain beneath `.runtime/` and are never part of durable state.
 
 Completed, stopped, and needs-attention capsules remain persisted. Starting a new round is allowed only when no nonterminal capsule exists, but it never deletes or rewrites terminal capsules.
 
@@ -71,7 +83,7 @@ SQLite is deliberately not implemented in this version. If later justified, it m
 Tests exercise public behavior through:
 
 - the `RoundStateStore` contract;
-- CLI commands with an injected store;
+- CLI commands with injected state and artifact stores;
 - round-scoped Base Image and Result Image validation; and
 - the explicit schema-three-to-schema-four migration interface.
 

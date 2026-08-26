@@ -68,7 +68,15 @@ export async function migrateSharedRoundState(
   };
 
   if (await pathExists(destinationCapsule)) {
-    if (await matchingDestinationExists(paths.roundsRoot, migratedRound)) {
+    if (
+      await matchingDestinationExists(
+        paths,
+        migratedRound,
+        legacyContents,
+        legacyBaseImagePath,
+        finalBaseImagePath
+      )
+    ) {
       return migrationResult(migratedRound);
     }
     throw new Error("Existing Round State Capsule does not match the shared round.");
@@ -105,15 +113,45 @@ export async function migrateSharedRoundState(
 }
 
 async function matchingDestinationExists(
-  roundsRoot: string,
-  expected: RoundState
+  paths: SharedStateMigrationPaths,
+  expected: RoundState,
+  legacyContents: string,
+  legacyBaseImagePath: string,
+  finalBaseImagePath: string
 ): Promise<boolean> {
   try {
-    const existing = await new JsonRoundStateStore(roundsRoot).get(expected.id);
-    return existing !== undefined && JSON.stringify(existing) === JSON.stringify(expected);
+    const existing = await new JsonRoundStateStore(paths.roundsRoot).get(expected.id);
+    if (existing === undefined || JSON.stringify(existing) !== JSON.stringify(expected)) {
+      return false;
+    }
+    const capsule = roundCapsuleDirectory(paths.roundsRoot, expected.id);
+    const migratedV3Path = join(
+      capsule,
+      ROUND_MIGRATIONS_DIRECTORY_NAME,
+      LEGACY_V3_STATE_BACKUP_FILE
+    );
+    if (
+      (await readFile(migratedV3Path, "utf8")) !== legacyContents ||
+      !(await filesMatch(legacyBaseImagePath, finalBaseImagePath))
+    ) {
+      return false;
+    }
+    const legacyV2Path = join(paths.legacyMigrationRoot, LEGACY_V2_STATE_BACKUP_FILE);
+    if (!(await pathExists(legacyV2Path))) {
+      return true;
+    }
+    return filesMatch(
+      legacyV2Path,
+      join(capsule, ROUND_MIGRATIONS_DIRECTORY_NAME, LEGACY_V2_STATE_BACKUP_FILE)
+    );
   } catch {
     return false;
   }
+}
+
+async function filesMatch(leftPath: string, rightPath: string): Promise<boolean> {
+  const [left, right] = await Promise.all([readFile(leftPath), readFile(rightPath)]);
+  return left.equals(right);
 }
 
 async function copyOptionalV2Backup(

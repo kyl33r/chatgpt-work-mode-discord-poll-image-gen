@@ -208,12 +208,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function requireContainedDirectory(path: string, root: string): Promise<void> {
+  const expectedPath = resolve(path);
+  const expectedPathFromRoot = relative(resolve(root), expectedPath);
   const [resolvedPath, resolvedRoot] = await Promise.all([
-    realpath(resolve(path)),
+    realpath(expectedPath),
     realpath(resolve(root))
   ]);
   const pathFromRoot = relative(resolvedRoot, resolvedPath);
   if (
+    pathFromRoot !== expectedPathFromRoot ||
     pathFromRoot.length === 0 ||
     pathFromRoot === ".." ||
     pathFromRoot.startsWith(`..${sep}`) ||

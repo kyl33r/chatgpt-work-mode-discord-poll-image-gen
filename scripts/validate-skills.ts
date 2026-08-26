@@ -93,7 +93,7 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     "The sole canonical project-skill source is `<project-root>/skills/`",
     "`.agents/skills/` is only a Codex discovery index of symlinks",
     "Never put raw image-generation errors",
-    "storage-neutral `RoundStateStore` interface",
+    "storage-neutral `RoundStateStore` and `RoundArtifactStore` interfaces",
     "Persist each Feedback Round in its own `.state/rounds/<round-id>/` capsule"
   ]) {
     if (!agentInstructions.includes(requiredPolicy)) {

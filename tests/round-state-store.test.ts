@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -66,6 +66,22 @@ describe("JsonRoundStateStore", () => {
     await expect(new JsonRoundStateStore(roundsRoot).get("../R001")).rejects.toThrow(
       "Round ID is not safe for local storage."
     );
+  });
+
+  it("rejects a capsule symlink instead of overwriting another round", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const store = new JsonRoundStateStore(roundsRoot);
+    const second = round("R002");
+    await store.save(second);
+    const secondPath = join(roundsRoot, "R002", "round.json");
+    const secondBytes = await readFile(secondPath, "utf8");
+    await symlink(join(roundsRoot, "R002"), join(roundsRoot, "R001"));
+
+    await expect(store.save(round("R001"))).rejects.toThrow(
+      "Unsupported or malformed Round State Capsule."
+    );
+    await expect(readFile(secondPath, "utf8")).resolves.toBe(secondBytes);
   });
 });
 

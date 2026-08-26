@@ -33,7 +33,7 @@ Participant reference images, native voting, and subsequent edit rounds are defe
 
 ## Local state
 
-The first implementation persists each round independently beneath `.state/rounds/<round-id>/`, with its own `round.json`, Base Image, Result Image, and migration backups. Updating one round never rewrites another round's files. `.runtime/` contains only disposable command payloads. CLI and domain behavior use the replaceable `RoundStateStore` interface; a local SQLite adapter can implement the same contract if real concurrency, transactional, query, recovery, or performance needs demonstrate that JSON is no longer suitable.
+The first implementation persists each round independently beneath `.state/rounds/<round-id>/`, with its own `round.json`, Base Image, Result Image, and migration backups. Updating one round never rewrites another round's files. `.runtime/` contains only disposable command payloads. CLI and domain behavior use replaceable `RoundStateStore` and `RoundArtifactStore` interfaces; a local SQLite state adapter can implement the same state contract if real concurrency, transactional, query, recovery, or performance needs demonstrate that JSON is no longer suitable.
 
 ## Local verification
 

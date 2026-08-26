@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { executeCommand } from "../src/cli.js";
+import { JsonRoundArtifactStore } from "../src/round/round-artifact-store.js";
 import { applyRoundEvent, createRound } from "../src/round/round-state.js";
 import { JsonRoundStateStore } from "../src/round/round-state-store.js";
 
@@ -37,6 +38,16 @@ describe("executeCommand", () => {
       }),
       phase: "stopped"
     });
+    await store.save({
+      ...createRound({
+        id: "RATTENTION",
+        baseImagePath: join(roundsRoot, "RATTENTION", "base-image.png"),
+        channelUrl: "https://discord.test/channels/allowlisted",
+        messageLimit: 5
+      }),
+      phase: "needs-attention",
+      attentionReason: "The prior round needs manual reconciliation."
+    });
     const priorRoundBytes = await readFile(
       join(roundsRoot, "ROLD", "round.json"),
       "utf8"
@@ -51,7 +62,7 @@ describe("executeCommand", () => {
           channelUrl: "https://discord.test/channels/allowlisted"
         },
         store,
-        { roundCapsulesRoot: roundsRoot }
+        { artifacts: new JsonRoundArtifactStore(roundsRoot) }
       )
     ).toMatchObject({
       action: "post-base-image",
@@ -324,7 +335,7 @@ describe("executeCommand", () => {
           channelUrl: "https://discord.test/channels/allowlisted"
         },
         store,
-        { roundCapsulesRoot: stagingRoot }
+        { artifacts: new JsonRoundArtifactStore(stagingRoot) }
       )
     ).rejects.toThrow("Base image must be staged under the durable state directory.");
 
@@ -341,7 +352,7 @@ describe("executeCommand", () => {
           channelUrl: "https://discord.test/channels/allowlisted"
         },
         store,
-        { roundCapsulesRoot: stagingRoot }
+        { artifacts: new JsonRoundArtifactStore(stagingRoot) }
       )
     ).rejects.toThrow("Base image must be staged under the durable state directory.");
   });
@@ -362,7 +373,7 @@ describe("executeCommand", () => {
         "confirm-generation",
         { roundId: "RRESULT", outcome: "succeeded", resultImagePath: outsideImagePath },
         store,
-        { roundCapsulesRoot: resultRoot }
+        { artifacts: new JsonRoundArtifactStore(resultRoot) }
       )
     ).rejects.toThrow("Result image must be staged under the durable state directory.");
 
@@ -375,7 +386,7 @@ describe("executeCommand", () => {
         "confirm-generation",
         { roundId: "RRESULT", outcome: "succeeded", resultImagePath: otherRoundImage },
         store,
-        { roundCapsulesRoot: resultRoot }
+        { artifacts: new JsonRoundArtifactStore(resultRoot) }
       )
     ).rejects.toThrow("Result image must be staged under the durable state directory.");
   });
