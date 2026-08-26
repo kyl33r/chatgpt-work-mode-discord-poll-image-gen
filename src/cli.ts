@@ -24,7 +24,8 @@ import type { ClipboardImageSource } from "./clipboard/clipboard-image-source.js
 import { MacOsClipboardImageSource } from "./clipboard/macos-clipboard-image-source.js";
 import {
   FeedbackAcquisitionEvaluationRecorder,
-  LocalFeedbackAcquisitionEvaluationSink
+  LocalFeedbackAcquisitionEvaluationSink,
+  type FeedbackAcquisitionEvaluationScenario
 } from "./evaluation/feedback-acquisition-evaluation.js";
 import {
   collectMessages,
@@ -117,7 +118,7 @@ async function executeLockedCommand(
     }));
   }
   if (command === "collect-messages") {
-    return collectRoundMessages(payload, store, artifacts);
+    return collectRoundMessages(payload, store, artifacts, evaluation);
   }
   if (command === "plan-feedback-captures") {
     return planRoundFeedbackCaptures(payload, store);
@@ -327,7 +328,8 @@ async function prepareBaseSubmission(
 async function collectRoundMessages(
   payload: unknown,
   store: RoundStateStore,
-  artifacts: RoundArtifactStore | undefined
+  artifacts: RoundArtifactStore | undefined,
+  evaluation: FeedbackAcquisitionEvaluationRecorder | undefined
 ): Promise<unknown> {
   const input = parseCollectMessagesPayload(payload);
   const round = await requireRound(store, input.roundId);
@@ -345,6 +347,32 @@ async function collectRoundMessages(
     const reason = "Feedback collection limits changed; reconcile the Feedback Round manually.";
     return requireFeedbackCaptureAttention(store, round, reason);
   }
+  const batchSelectedImageCount = round.feedbackCaptureBatch?.messages.reduce(
+    (count, message) => count + message.selectedAttachments.length,
+    0
+  ) ?? 0;
+  const batchAcceptedArtifactCount = round.feedbackCaptureBatch?.messages.reduce(
+    (count, message) => count + message.selectedAttachments.filter(
+      (attachment) => attachment.status === "accepted"
+    ).length,
+    0
+  ) ?? 0;
+  const selectedImageCount = batchSelectedImageCount;
+  const acceptedArtifactCount = batchAcceptedArtifactCount;
+  const collectionEvaluation = selectedImageCount > 0
+    ? startCommandEvaluation(
+      evaluation,
+      selectedImageCount > 1 ? "multiple-valid-images" : "single-valid-image"
+    )
+    : undefined;
+  const endCollectionPhase = startCommandEvaluationPhase(
+    collectionEvaluation,
+    "collection-handoff"
+  );
+  let successfulFullDecodeCount = 0;
+  let duplicateArtifactCount = 0;
+  let skippedArtifactCount = 0;
+  let reorderedArtifactCount = 0;
   const validatedExistingMessages = round.capturedMessages.map((message) => ({
     ...message,
     contextImages: message.contextImages.map((image) => ({ ...image }))
@@ -373,6 +401,18 @@ async function collectRoundMessages(
           message.selectedAttachments.some((attachment) => attachment.status !== "accepted")
         )
       ) {
+        if (!round.feedbackCaptureBatch) {
+          skippedArtifactCount = planned.length;
+        } else if (!hasSameFeedbackCaptureSelection(round.feedbackCaptureBatch, candidateBatch)) {
+          reorderedArtifactCount = 1;
+        } else {
+          skippedArtifactCount = round.feedbackCaptureBatch.messages.reduce(
+            (count, message) => count + message.selectedAttachments.filter(
+              (attachment) => attachment.status !== "accepted"
+            ).length,
+            0
+          );
+        }
         throw new Error("Feedback image capture is incomplete or mismatched.");
       }
       acceptedFeedbackImages = round.feedbackCaptureBatch.messages.flatMap((message) =>
@@ -393,13 +433,20 @@ async function collectRoundMessages(
     const seenPaths = new Set<string>();
     for (const [messageIndex, message] of validatedExistingMessages.entries()) {
       for (const image of message.contextImages) {
-        const validated = await requireArtifactStore(artifacts).requireFeedbackImage(
-          round.id,
-          messageIndex + 1,
-          image.attachmentIndex,
-          image.imagePath
-        );
+        let validated: string;
+        try {
+          validated = await requireArtifactStore(artifacts).requireFeedbackImage(
+            round.id,
+            messageIndex + 1,
+            image.attachmentIndex,
+            image.imagePath
+          );
+        } catch {
+          skippedArtifactCount += 1;
+          throw new Error("Feedback image validation failed.");
+        }
         if (seenPaths.has(validated)) {
+          duplicateArtifactCount += 1;
           throw new Error("Participant image context contains a duplicate path.");
         }
         seenPaths.add(validated);
@@ -407,13 +454,21 @@ async function collectRoundMessages(
       }
     }
     for (const image of acceptedFeedbackImages) {
-      const validated = await requireArtifactStore(artifacts).requireFeedbackImage(
-        round.id,
-        image.messageOrdinal,
-        image.attachmentIndex,
-        image.imagePath
-      );
+      let validated: string;
+      try {
+        validated = await requireArtifactStore(artifacts).requireFeedbackImage(
+          round.id,
+          image.messageOrdinal,
+          image.attachmentIndex,
+          image.imagePath
+        );
+        successfulFullDecodeCount += 1;
+      } catch {
+        skippedArtifactCount += 1;
+        throw new Error("Feedback image validation failed.");
+      }
       if (seenPaths.has(validated)) {
+        duplicateArtifactCount += 1;
         throw new Error("Participant image context contains a duplicate path.");
       }
       seenPaths.add(validated);
@@ -421,11 +476,40 @@ async function collectRoundMessages(
     }
   } catch (error) {
     if (error instanceof MessageCollectionAmbiguityError) {
+      reorderedArtifactCount = Math.max(reorderedArtifactCount, 1);
       const reason = "Discord message order is ambiguous; reconcile the round manually.";
-      return requireFeedbackCaptureAttention(store, round, reason);
+      return requireCollectionAttentionWithEvaluation(
+        store,
+        round,
+        reason,
+        collectionEvaluation,
+        endCollectionPhase,
+        collectionEvaluationSummary({
+          selectedImageCount,
+          acceptedArtifactCount,
+          successfulFullDecodeCount,
+          duplicateArtifactCount,
+          skippedArtifactCount,
+          reorderedArtifactCount
+        })
+      );
     }
     const reason = "A selected participant image is incomplete, invalid, or mismatched.";
-    return requireFeedbackCaptureAttention(store, round, reason);
+    return requireCollectionAttentionWithEvaluation(
+      store,
+      round,
+      reason,
+      collectionEvaluation,
+      endCollectionPhase,
+      collectionEvaluationSummary({
+        selectedImageCount,
+        acceptedArtifactCount,
+        successfulFullDecodeCount,
+        duplicateArtifactCount,
+        skippedArtifactCount,
+        reorderedArtifactCount
+      })
+    );
   }
   let collection;
   try {
@@ -442,11 +526,23 @@ async function collectRoundMessages(
     if (!(error instanceof MessageCollectionAmbiguityError)) {
       throw error;
     }
+    reorderedArtifactCount = Math.max(reorderedArtifactCount, 1);
     const reason = "Discord message order is ambiguous; reconcile the round manually.";
-    await store.save(
-      applyRoundEvent(round, { type: "attention-required", reason })
+    return requireCollectionAttentionWithEvaluation(
+      store,
+      round,
+      reason,
+      collectionEvaluation,
+      endCollectionPhase,
+      collectionEvaluationSummary({
+        selectedImageCount,
+        acceptedArtifactCount,
+        successfulFullDecodeCount,
+        duplicateArtifactCount,
+        skippedArtifactCount,
+        reorderedArtifactCount
+      })
     );
-    return { action: "needs-attention", roundId: round.id, reason };
   }
   if (!collection.complete) {
     await store.save(
@@ -455,6 +551,20 @@ async function collectRoundMessages(
         capturedMessages: collection.captured
       })
     );
+    endCollectionPhase();
+    await finishCommandEvaluation(collectionEvaluation, collectionEvaluationSummary({
+      selectedImageCount,
+      acceptedArtifactCount,
+      successfulFullDecodeCount,
+      duplicateArtifactCount,
+      skippedArtifactCount,
+      reorderedArtifactCount,
+      completion: "incomplete",
+      correctness: "verified",
+      manualInterventionRequired: false,
+      interruptionBoundary: "none",
+      recovery: "automatic"
+    }));
     return {
       action: "wait",
       roundId: round.id,
@@ -468,6 +578,20 @@ async function collectRoundMessages(
     capturedMessages: collection.captured
   });
   await store.save(synthesizing);
+  endCollectionPhase();
+  await finishCommandEvaluation(collectionEvaluation, collectionEvaluationSummary({
+    selectedImageCount,
+    acceptedArtifactCount,
+    successfulFullDecodeCount,
+    duplicateArtifactCount,
+    skippedArtifactCount,
+    reorderedArtifactCount,
+    completion: "complete",
+    correctness: "verified",
+    manualInterventionRequired: false,
+    interruptionBoundary: "none",
+    recovery: "automatic"
+  }));
   return {
     action: "synthesize-feedback",
     roundId: round.id
@@ -828,6 +952,113 @@ async function requireFeedbackCaptureAttention(
     throw new Error("Unable to persist controlled Needs Attention state.");
   }
   return { action: "needs-attention", roundId: round.id, reason };
+}
+
+type CommandEvaluationSummary = Parameters<
+  FeedbackAcquisitionEvaluationScenario["finish"]
+>[0];
+
+function startCommandEvaluation(
+  evaluation: FeedbackAcquisitionEvaluationRecorder | undefined,
+  scenarioCode: string
+): FeedbackAcquisitionEvaluationScenario | undefined {
+  try {
+    return evaluation?.start(scenarioCode);
+  } catch {
+    return undefined;
+  }
+}
+
+function startCommandEvaluationPhase(
+  evaluation: FeedbackAcquisitionEvaluationScenario | undefined,
+  phase: "collection-handoff"
+): () => void {
+  try {
+    const end = evaluation?.startPhase(phase);
+    return () => {
+      try {
+        end?.();
+      } catch {
+        // Evaluation must not affect command behavior.
+      }
+    };
+  } catch {
+    return () => undefined;
+  }
+}
+
+async function finishCommandEvaluation(
+  evaluation: FeedbackAcquisitionEvaluationScenario | undefined,
+  summary: CommandEvaluationSummary
+): Promise<void> {
+  try {
+    await evaluation?.finish(summary);
+  } catch {
+    // Evaluation must not affect command behavior.
+  }
+}
+
+async function requireCollectionAttentionWithEvaluation(
+  store: RoundStateStore,
+  round: Parameters<typeof applyRoundEvent>[0],
+  reason: string,
+  evaluation: FeedbackAcquisitionEvaluationScenario | undefined,
+  endCollectionPhase: () => void,
+  summary: CommandEvaluationSummary
+): Promise<{ action: "needs-attention"; roundId: string; reason: string }> {
+  endCollectionPhase();
+  const scenarioCode = summary.reorderedArtifactCount > 0
+    ? "selection-order-changed"
+    : summary.duplicateArtifactCount > 0 || summary.skippedArtifactCount > 0
+      ? "artifact-validation-failed"
+      : "selection-order-changed";
+  try {
+    evaluation?.classify(scenarioCode);
+  } catch {
+    // Evaluation must not affect command behavior.
+  }
+  try {
+    return await requireFeedbackCaptureAttention(store, round, reason);
+  } finally {
+    await finishCommandEvaluation(evaluation, summary);
+  }
+}
+
+function collectionEvaluationSummary(input: {
+  selectedImageCount: number;
+  acceptedArtifactCount: number;
+  successfulFullDecodeCount: number;
+  duplicateArtifactCount: number;
+  skippedArtifactCount: number;
+  reorderedArtifactCount: number;
+  completion?: "complete" | "incomplete";
+  correctness?: "verified" | "unverifiable";
+  manualInterventionRequired?: boolean;
+  interruptionBoundary?: "none" | "after-receipt-before-collection";
+  recovery?: "automatic" | "needs-attention";
+}): CommandEvaluationSummary {
+  return {
+    completion: input.completion ?? "incomplete",
+    correctness: input.correctness ?? "unverifiable",
+    expectedSelectedImageCount: input.selectedImageCount,
+    acceptedArtifactCount: input.acceptedArtifactCount,
+    successfulFullDecodeCount: input.successfulFullDecodeCount,
+    acceptedOrderMatched:
+      input.duplicateArtifactCount === 0 &&
+      input.skippedArtifactCount === 0 &&
+      input.reorderedArtifactCount === 0,
+    browserCopyActionCount: input.acceptedArtifactCount,
+    otherBrowserAcquisitionActionCount: 0,
+    restartCount: 0,
+    cleanResume: false,
+    manualInterventionRequired: input.manualInterventionRequired ?? true,
+    interruptionBoundary:
+      input.interruptionBoundary ?? "after-receipt-before-collection",
+    duplicateArtifactCount: input.duplicateArtifactCount,
+    skippedArtifactCount: input.skippedArtifactCount,
+    reorderedArtifactCount: input.reorderedArtifactCount,
+    recovery: input.recovery ?? "needs-attention"
+  };
 }
 
 const AMBIGUOUS_SIDE_EFFECT_PHASES: ReadonlySet<RoundPhase> = new Set([

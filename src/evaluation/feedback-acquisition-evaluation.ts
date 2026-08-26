@@ -13,6 +13,7 @@ import {
   FEEDBACK_ACQUISITION_EVALUATION_REPORT_ROOT,
   FEEDBACK_ACQUISITION_EVALUATION_SCENARIO_CODES,
   FEEDBACK_ACQUISITION_EVALUATION_SCHEMA_VERSION,
+  FEEDBACK_ACQUISITION_EVALUATION_SINK_TIMEOUT_MS,
   PRIVATE_DIRECTORY_MODE,
   PRIVATE_FILE_MODE
 } from "../constants.js";
@@ -35,9 +36,9 @@ type FaultMatrixRow = Readonly<{
   scenarioCode: string;
   completion: FeedbackAcquisitionCompletion;
   browserCopyActionCount: number;
-  duplicateArtifactCount: 0;
-  skippedArtifactCount: 0;
-  reorderedArtifactCount: 0;
+  duplicateArtifactCount: number;
+  skippedArtifactCount: number;
+  reorderedArtifactCount: number;
   recovery: FeedbackAcquisitionRecovery;
 }>;
 
@@ -45,49 +46,60 @@ const FAULT_CLASSIFICATIONS = [
   ["single-valid-image", "complete", 1, "automatic"],
   ["multiple-valid-images", "complete", 2, "automatic"],
   ["unsupported-or-excess-attachments", "complete", 0, "automatic"],
-  ["clipboard-unchanged", "incomplete", 1, "needs-attention"],
-  ["clipboard-over-advanced", "incomplete", 1, "needs-attention"],
-  ["clipboard-unreadable", "incomplete", 1, "needs-attention"],
-  ["clipboard-empty", "incomplete", 1, "needs-attention"],
-  ["clipboard-multiple-images", "incomplete", 1, "needs-attention"],
-  ["browser-copy-control-missing", "incomplete", 0, "needs-attention"],
-  ["visible-attachment-ambiguous", "incomplete", 0, "needs-attention"],
-  ["selection-order-changed", "incomplete", 0, "needs-attention"],
-  ["interrupted-before-intent", "incomplete", 0, "automatic"],
-  ["interrupted-after-intent-before-copy", "incomplete", 0, "needs-attention"],
-  ["interrupted-after-copy-before-capture", "incomplete", 1, "needs-attention"],
-  ["interrupted-during-staging", "incomplete", 1, "needs-attention"],
-  ["interrupted-after-install-before-receipt", "incomplete", 1, "needs-attention"],
+  ["clipboard-unchanged", "incomplete", 1, "needs-attention", 0, 1, 0],
+  ["clipboard-over-advanced", "incomplete", 1, "needs-attention", 0, 1, 0],
+  ["clipboard-unreadable", "incomplete", 1, "needs-attention", 0, 1, 0],
+  ["clipboard-empty", "incomplete", 1, "needs-attention", 0, 1, 0],
+  ["clipboard-multiple-images", "incomplete", 1, "needs-attention", 0, 1, 0],
+  ["browser-copy-control-missing", "incomplete", 0, "needs-attention", 0, 1, 0],
+  ["visible-attachment-ambiguous", "incomplete", 0, "needs-attention", 0, 1, 0],
+  ["selection-order-changed", "incomplete", 0, "needs-attention", 0, 1, 1],
+  ["interrupted-before-intent", "incomplete", 0, "automatic", 0, 1, 0],
+  ["interrupted-after-intent-before-copy", "incomplete", 0, "needs-attention", 0, 1, 0],
+  ["interrupted-after-copy-before-capture", "incomplete", 1, "needs-attention", 0, 1, 0],
+  ["interrupted-during-staging", "incomplete", 1, "needs-attention", 0, 1, 0],
+  ["interrupted-after-install-before-receipt", "incomplete", 1, "needs-attention", 0, 1, 0],
   ["interrupted-after-receipt-before-collection", "incomplete", 1, "resume"],
   ["interrupted-after-collection", "complete", 1, "resume"],
-  ["restart-selected", "incomplete", 0, "resume"],
-  ["restart-unresolved-intent", "incomplete", 0, "needs-attention"],
+  ["restart-selected", "incomplete", 0, "resume", 0, 1, 0],
+  ["restart-unresolved-intent", "incomplete", 0, "needs-attention", 0, 1, 0],
   ["restart-accepted-artifact", "complete", 0, "resume"],
   ["restart-collected-batch", "complete", 0, "resume"],
-  ["artifact-missing", "incomplete", 0, "needs-attention"],
-  ["artifact-corrupt", "incomplete", 0, "needs-attention"],
-  ["artifact-symlinked", "incomplete", 0, "needs-attention"],
-  ["artifact-aliased", "incomplete", 0, "needs-attention"],
-  ["artifact-outside-capsule", "incomplete", 0, "needs-attention"],
-  ["artifact-pre-existing", "incomplete", 1, "needs-attention"],
-  ["host-unsupported", "incomplete", 0, "terminal"],
-  ["pasteboard-unavailable", "incomplete", 0, "terminal"]
+  ["artifact-missing", "incomplete", 0, "needs-attention", 0, 1, 0],
+  ["artifact-corrupt", "incomplete", 0, "needs-attention", 0, 1, 0],
+  ["artifact-symlinked", "incomplete", 0, "needs-attention", 0, 1, 0],
+  ["artifact-aliased", "incomplete", 0, "needs-attention", 1, 0, 0],
+  ["artifact-outside-capsule", "incomplete", 0, "needs-attention", 0, 1, 0],
+  ["artifact-pre-existing", "incomplete", 1, "needs-attention", 1, 0, 0],
+  ["host-unsupported", "incomplete", 0, "terminal", 0, 1, 0],
+  ["pasteboard-unavailable", "incomplete", 0, "terminal", 0, 1, 0]
 ] as const satisfies ReadonlyArray<readonly [
   string,
   FeedbackAcquisitionCompletion,
   number,
-  FeedbackAcquisitionRecovery
+  FeedbackAcquisitionRecovery,
+  number?,
+  number?,
+  number?
 ]>;
 
 export const FEEDBACK_ACQUISITION_FAULT_MATRIX: readonly FaultMatrixRow[] =
   FAULT_CLASSIFICATIONS.map(
-    ([scenarioCode, completion, browserCopyActionCount, recovery]) => ({
+    ([
       scenarioCode,
       completion,
       browserCopyActionCount,
-      duplicateArtifactCount: 0,
-      skippedArtifactCount: 0,
-      reorderedArtifactCount: 0,
+      recovery,
+      duplicateArtifactCount = 0,
+      skippedArtifactCount = 0,
+      reorderedArtifactCount = 0
+    ]) => ({
+      scenarioCode,
+      completion,
+      browserCopyActionCount,
+      duplicateArtifactCount,
+      skippedArtifactCount,
+      reorderedArtifactCount,
       recovery
     })
   );
@@ -300,13 +312,33 @@ export class FeedbackAcquisitionEvaluationScenario {
       ...validatedSummary,
       phaseDurationsMs
     };
-    let reportWritten = false;
-    try {
-      reportWritten = await this.sink.write(record);
-    } catch {
-      reportWritten = false;
-    }
+    const reportWritten = await writeWithDeadline(this.sink, record);
     return { completion: validatedSummary.completion, reportWritten };
+  }
+}
+
+async function writeWithDeadline(
+  sink: FeedbackAcquisitionEvaluationSink,
+  record: FeedbackAcquisitionEvaluationRecord
+): Promise<boolean> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      sink.write(record).catch(() => false),
+      new Promise<boolean>((resolve) => {
+        timeout = setTimeout(
+          () => resolve(false),
+          FEEDBACK_ACQUISITION_EVALUATION_SINK_TIMEOUT_MS
+        );
+        timeout.unref();
+      })
+    ]);
+  } catch {
+    return false;
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
 }
 

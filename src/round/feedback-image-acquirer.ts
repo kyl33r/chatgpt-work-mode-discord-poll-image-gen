@@ -43,18 +43,22 @@ export class FeedbackImageAcquirer {
     const round = await this.requireCollectingRound(request.roundId);
     if (findAttachment(round.feedbackCaptureBatch!, "copy-intent-recorded")) {
       const evaluation = this.startEvaluation("restart-unresolved-intent");
-      const result = await this.requireAttention(round, COPY_INTENT_AMBIGUITY_REASON);
-      await finishEvaluation(evaluation, createEvaluationSummary(round.feedbackCaptureBatch!, {
-        completion: "incomplete",
-        correctness: "unverifiable",
-        browserCopyActionCount: 0,
-        restartCount: 1,
-        cleanResume: false,
-        manualInterventionRequired: true,
-        interruptionBoundary: "after-intent-before-copy",
-        recovery: "needs-attention"
-      }));
-      return result;
+      return this.requireAttentionWithEvaluation(
+        round,
+        COPY_INTENT_AMBIGUITY_REASON,
+        evaluation,
+        createImageEvaluationSummary({
+          completion: "incomplete",
+          correctness: "unverifiable",
+          skippedArtifactCount: 1,
+          browserCopyActionCount: 0,
+          restartCount: 1,
+          cleanResume: false,
+          manualInterventionRequired: true,
+          interruptionBoundary: "after-intent-before-copy",
+          recovery: "needs-attention"
+        })
+      );
     }
     const accepted = findRequestedAttachment(round.feedbackCaptureBatch!, request, "accepted");
     if (accepted) {
@@ -72,12 +76,32 @@ export class FeedbackImageAcquirer {
         );
       } catch {
         endArtifactPhase();
-        return this.requireAttention(round, ARTIFACT_INSTALLATION_AMBIGUITY_REASON);
+        tryClassifyEvaluation(evaluation, "artifact-validation-failed");
+        return this.requireAttentionWithEvaluation(
+          round,
+          ARTIFACT_INSTALLATION_AMBIGUITY_REASON,
+          evaluation,
+          createImageEvaluationSummary({
+            completion: "incomplete",
+            correctness: "unverifiable",
+            acceptedArtifactCount: 1,
+            successfulFullDecodeCount: 0,
+            skippedArtifactCount: 1,
+            browserCopyActionCount: 0,
+            restartCount: 1,
+            cleanResume: false,
+            manualInterventionRequired: true,
+            interruptionBoundary: "after-receipt-before-collection",
+            recovery: "needs-attention"
+          })
+        );
       }
       endArtifactPhase();
-      await finishEvaluation(evaluation, createEvaluationSummary(round.feedbackCaptureBatch!, {
+      await finishEvaluation(evaluation, createImageEvaluationSummary({
         completion: "complete",
         correctness: "verified",
+        acceptedArtifactCount: 1,
+        successfulFullDecodeCount: 1,
         browserCopyActionCount: 0,
         restartCount: 1,
         cleanResume: true,
@@ -89,13 +113,16 @@ export class FeedbackImageAcquirer {
     }
     const next = findAttachment(round.feedbackCaptureBatch!, "selected");
     if (!next || !isRequestedTuple(next, request)) {
-      return this.requireAttention(round, CAPTURE_PROTOCOL_AMBIGUITY_REASON);
+      const evaluation = this.startEvaluation("selection-order-changed");
+      return this.requireAttentionWithEvaluation(
+        round,
+        CAPTURE_PROTOCOL_AMBIGUITY_REASON,
+        evaluation,
+        createOrderingFaultSummary(round.feedbackCaptureBatch!, request, "selected")
+      );
     }
 
-    const selectedImageCount = countBatchAttachments(round.feedbackCaptureBatch!);
-    const evaluation = this.startEvaluation(
-      selectedImageCount === 1 ? "single-valid-image" : "multiple-valid-images"
-    );
+    const evaluation = this.startEvaluation("image-prepare");
     const endPreparationPhase = startEvaluationPhase(evaluation, "preparation");
 
     let expectedClipboardChangeCount: number;
@@ -103,24 +130,24 @@ export class FeedbackImageAcquirer {
       expectedClipboardChangeCount = await this.clipboard.getChangeCount();
     } catch (error) {
       endPreparationPhase();
-      const classification = classifyClipboardFailure(error);
-      try {
-        evaluation?.classify(classification.scenarioCode);
-      } catch {
-        // Evaluation must not affect acquisition behavior.
-      }
-      const result = await this.requireAttention(round, CLIPBOARD_CAPTURE_AMBIGUITY_REASON);
-      await finishEvaluation(evaluation, createEvaluationSummary(round.feedbackCaptureBatch!, {
-        completion: "incomplete",
-        correctness: "unverifiable",
-        browserCopyActionCount: 0,
-        restartCount: 0,
-        cleanResume: false,
-        manualInterventionRequired: classification.recovery === "needs-attention",
-        interruptionBoundary: "before-intent",
-        recovery: classification.recovery
-      }));
-      return result;
+      const classification = classifyClipboardFailure(error, "before-copy");
+      tryClassifyEvaluation(evaluation, classification.scenarioCode);
+      return this.requireAttentionWithEvaluation(
+        round,
+        CLIPBOARD_CAPTURE_AMBIGUITY_REASON,
+        evaluation,
+        createImageEvaluationSummary({
+          completion: "incomplete",
+          correctness: "unverifiable",
+          skippedArtifactCount: 1,
+          browserCopyActionCount: 0,
+          restartCount: 0,
+          cleanResume: false,
+          manualInterventionRequired: classification.recovery === "needs-attention",
+          interruptionBoundary: "before-intent",
+          recovery: classification.recovery
+        })
+      );
     }
     try {
       await this.store.save(applyRoundEvent(round, {
@@ -130,26 +157,26 @@ export class FeedbackImageAcquirer {
       }));
     } catch {
       endPreparationPhase();
-      try {
-        evaluation?.classify("restart-unresolved-intent");
-      } catch {
-        // Evaluation must not affect acquisition behavior.
-      }
-      const result = await this.requireAttention(round, COPY_INTENT_AMBIGUITY_REASON);
-      await finishEvaluation(evaluation, createEvaluationSummary(round.feedbackCaptureBatch!, {
-        completion: "incomplete",
-        correctness: "unverifiable",
-        browserCopyActionCount: 0,
-        restartCount: 0,
-        cleanResume: false,
-        manualInterventionRequired: true,
-        interruptionBoundary: "after-intent-before-copy",
-        recovery: "needs-attention"
-      }));
-      return result;
+      tryClassifyEvaluation(evaluation, "interrupted-after-intent-before-copy");
+      return this.requireAttentionWithEvaluation(
+        round,
+        COPY_INTENT_AMBIGUITY_REASON,
+        evaluation,
+        createImageEvaluationSummary({
+          completion: "incomplete",
+          correctness: "unverifiable",
+          skippedArtifactCount: 1,
+          browserCopyActionCount: 0,
+          restartCount: 0,
+          cleanResume: false,
+          manualInterventionRequired: true,
+          interruptionBoundary: "after-intent-before-copy",
+          recovery: "needs-attention"
+        })
+      );
     }
     endPreparationPhase();
-    await finishEvaluation(evaluation, createEvaluationSummary(round.feedbackCaptureBatch!, {
+    await finishEvaluation(evaluation, createImageEvaluationSummary({
       completion: "incomplete",
       correctness: "unverifiable",
       browserCopyActionCount: 0,
@@ -166,17 +193,26 @@ export class FeedbackImageAcquirer {
     const round = await this.requireCollectingRound(request.roundId);
     const intent = findAttachment(round.feedbackCaptureBatch!, "copy-intent-recorded");
     if (!intent || !isRequestedTuple(intent, request)) {
-      return this.requireAttention(round, CAPTURE_PROTOCOL_AMBIGUITY_REASON);
+      const evaluation = this.startEvaluation("selection-order-changed");
+      return this.requireAttentionWithEvaluation(
+        round,
+        CAPTURE_PROTOCOL_AMBIGUITY_REASON,
+        evaluation,
+        createOrderingFaultSummary(round.feedbackCaptureBatch!, request, "copy-intent-recorded")
+      );
     }
     const expectedClipboardChangeCount = intent.expectedClipboardChangeCount;
     if (expectedClipboardChangeCount === undefined) {
-      return this.requireAttention(round, CAPTURE_PROTOCOL_AMBIGUITY_REASON);
+      const evaluation = this.startEvaluation("selection-order-changed");
+      return this.requireAttentionWithEvaluation(
+        round,
+        CAPTURE_PROTOCOL_AMBIGUITY_REASON,
+        evaluation,
+        createOrderingFaultSummary(round.feedbackCaptureBatch!, request, "copy-intent-recorded")
+      );
     }
 
-    const selectedImageCount = countBatchAttachments(round.feedbackCaptureBatch!);
-    const evaluation = this.startEvaluation(
-      selectedImageCount === 1 ? "single-valid-image" : "multiple-valid-images"
-    );
+    const evaluation = this.startEvaluation("image-capture");
 
     let image: { observedChangeCount: number; pngBytes: Uint8Array };
     const endClipboardPhase = startEvaluationPhase(evaluation, "clipboard-read-decode");
@@ -184,24 +220,24 @@ export class FeedbackImageAcquirer {
       image = await this.clipboard.readSingleImage(expectedClipboardChangeCount);
     } catch (error) {
       endClipboardPhase();
-      const classification = classifyClipboardFailure(error);
-      try {
-        evaluation?.classify(classification.scenarioCode);
-      } catch {
-        // Evaluation must not affect acquisition behavior.
-      }
-      const result = await this.requireAttention(round, CLIPBOARD_CAPTURE_AMBIGUITY_REASON);
-      await finishEvaluation(evaluation, createEvaluationSummary(round.feedbackCaptureBatch!, {
-        completion: "incomplete",
-        correctness: "unverifiable",
-        browserCopyActionCount: 1,
-        restartCount: 0,
-        cleanResume: false,
-        manualInterventionRequired: classification.recovery === "needs-attention",
-        interruptionBoundary: "after-copy-before-capture",
-        recovery: classification.recovery
-      }));
-      return result;
+      const classification = classifyClipboardFailure(error, "after-copy");
+      tryClassifyEvaluation(evaluation, classification.scenarioCode);
+      return this.requireAttentionWithEvaluation(
+        round,
+        CLIPBOARD_CAPTURE_AMBIGUITY_REASON,
+        evaluation,
+        createImageEvaluationSummary({
+          completion: "incomplete",
+          correctness: "unverifiable",
+          skippedArtifactCount: 1,
+          browserCopyActionCount: 1,
+          restartCount: 0,
+          cleanResume: false,
+          manualInterventionRequired: classification.recovery === "needs-attention",
+          interruptionBoundary: "after-copy-before-capture",
+          recovery: classification.recovery
+        })
+      );
     }
     endClipboardPhase();
     if (
@@ -209,7 +245,28 @@ export class FeedbackImageAcquirer {
       !(image.pngBytes instanceof Uint8Array) ||
       image.pngBytes.length === 0
     ) {
-      return this.requireAttention(round, CLIPBOARD_CAPTURE_AMBIGUITY_REASON);
+      const scenarioCode = image.observedChangeCount === expectedClipboardChangeCount
+        ? "clipboard-unchanged"
+        : image.observedChangeCount !== expectedClipboardChangeCount + 1
+          ? "clipboard-over-advanced"
+          : "clipboard-unreadable";
+      tryClassifyEvaluation(evaluation, scenarioCode);
+      return this.requireAttentionWithEvaluation(
+        round,
+        CLIPBOARD_CAPTURE_AMBIGUITY_REASON,
+        evaluation,
+        createImageEvaluationSummary({
+          completion: "incomplete",
+          correctness: "unverifiable",
+          skippedArtifactCount: 1,
+          browserCopyActionCount: 1,
+          restartCount: 0,
+          cleanResume: false,
+          manualInterventionRequired: true,
+          interruptionBoundary: "after-copy-before-capture",
+          recovery: "needs-attention"
+        })
+      );
     }
     let imagePath: string;
     const endArtifactPhase = startEvaluationPhase(
@@ -225,7 +282,23 @@ export class FeedbackImageAcquirer {
       );
     } catch {
       endArtifactPhase();
-      return this.requireAttention(round, ARTIFACT_INSTALLATION_AMBIGUITY_REASON);
+      tryClassifyEvaluation(evaluation, "artifact-install-failed");
+      return this.requireAttentionWithEvaluation(
+        round,
+        ARTIFACT_INSTALLATION_AMBIGUITY_REASON,
+        evaluation,
+        createImageEvaluationSummary({
+          completion: "incomplete",
+          correctness: "unverifiable",
+          skippedArtifactCount: 1,
+          browserCopyActionCount: 1,
+          restartCount: 0,
+          cleanResume: false,
+          manualInterventionRequired: true,
+          interruptionBoundary: "during-staging",
+          recovery: "needs-attention"
+        })
+      );
     }
     endArtifactPhase();
     try {
@@ -235,30 +308,38 @@ export class FeedbackImageAcquirer {
         imagePath
       }));
     } catch {
-      return this.requireAttention(round, ARTIFACT_INSTALLATION_AMBIGUITY_REASON);
+      tryClassifyEvaluation(evaluation, "receipt-persistence-failed");
+      return this.requireAttentionWithEvaluation(
+        round,
+        ARTIFACT_INSTALLATION_AMBIGUITY_REASON,
+        evaluation,
+        createImageEvaluationSummary({
+          completion: "incomplete",
+          correctness: "unverifiable",
+          acceptedArtifactCount: 0,
+          successfulFullDecodeCount: 1,
+          skippedArtifactCount: 1,
+          browserCopyActionCount: 1,
+          restartCount: 0,
+          cleanResume: false,
+          manualInterventionRequired: true,
+          interruptionBoundary: "after-install-before-receipt",
+          recovery: "needs-attention"
+        })
+      );
     }
-    const acceptedArtifactCount = countBatchAttachments(
-      round.feedbackCaptureBatch!,
-      "accepted"
-    ) + 1;
-    await finishEvaluation(evaluation, {
+    await finishEvaluation(evaluation, createImageEvaluationSummary({
       completion: "complete",
       correctness: "verified",
-      expectedSelectedImageCount: selectedImageCount,
-      acceptedArtifactCount,
-      successfulFullDecodeCount: acceptedArtifactCount,
-      acceptedOrderMatched: true,
+      acceptedArtifactCount: 1,
+      successfulFullDecodeCount: 1,
       browserCopyActionCount: 1,
-      otherBrowserAcquisitionActionCount: 0,
       restartCount: 0,
       cleanResume: false,
       manualInterventionRequired: false,
       interruptionBoundary: "none",
-      duplicateArtifactCount: 0,
-      skippedArtifactCount: 0,
-      reorderedArtifactCount: 0,
       recovery: "automatic"
-    });
+    }));
     return { action: "captured" };
   }
 
@@ -311,18 +392,19 @@ export class FeedbackImageAcquirer {
     }
     return { action: "needs-attention", reason };
   }
-}
 
-function countBatchAttachments(
-  batch: FeedbackCaptureBatch,
-  status?: "accepted"
-): number {
-  return batch.messages.reduce(
-    (total, message) => total + message.selectedAttachments.filter(
-      (attachment) => status === undefined || attachment.status === status
-    ).length,
-    0
-  );
+  private async requireAttentionWithEvaluation(
+    round: RoundState,
+    reason: string,
+    evaluation: FeedbackAcquisitionEvaluationScenario | undefined,
+    summary: Parameters<FeedbackAcquisitionEvaluationScenario["finish"]>[0]
+  ): Promise<{ action: "needs-attention"; reason: string }> {
+    try {
+      return await this.requireAttention(round, reason);
+    } finally {
+      await finishEvaluation(evaluation, summary);
+    }
+  }
 }
 
 function startEvaluationPhase(
@@ -354,10 +436,11 @@ async function finishEvaluation(
   }
 }
 
-function createEvaluationSummary(
-  batch: FeedbackCaptureBatch,
+type EvaluationSummary = Parameters<FeedbackAcquisitionEvaluationScenario["finish"]>[0];
+
+function createImageEvaluationSummary(
   classification: Pick<
-    Parameters<FeedbackAcquisitionEvaluationScenario["finish"]>[0],
+    EvaluationSummary,
     | "completion"
     | "correctness"
     | "browserCopyActionCount"
@@ -366,29 +449,84 @@ function createEvaluationSummary(
     | "manualInterventionRequired"
     | "interruptionBoundary"
     | "recovery"
-  >
-): Parameters<FeedbackAcquisitionEvaluationScenario["finish"]>[0] {
-  const acceptedArtifactCount = countBatchAttachments(batch, "accepted");
+  > & Partial<Pick<
+    EvaluationSummary,
+    | "acceptedArtifactCount"
+    | "successfulFullDecodeCount"
+    | "acceptedOrderMatched"
+    | "duplicateArtifactCount"
+    | "skippedArtifactCount"
+    | "reorderedArtifactCount"
+  >>
+): EvaluationSummary {
   return {
     ...classification,
-    expectedSelectedImageCount: countBatchAttachments(batch),
-    acceptedArtifactCount,
-    successfulFullDecodeCount: acceptedArtifactCount,
-    acceptedOrderMatched: true,
+    expectedSelectedImageCount: 1,
+    acceptedArtifactCount: classification.acceptedArtifactCount ?? 0,
+    successfulFullDecodeCount: classification.successfulFullDecodeCount ?? 0,
+    acceptedOrderMatched: classification.acceptedOrderMatched ?? true,
     otherBrowserAcquisitionActionCount: 0,
-    duplicateArtifactCount: 0,
-    skippedArtifactCount: 0,
-    reorderedArtifactCount: 0
+    duplicateArtifactCount: classification.duplicateArtifactCount ?? 0,
+    skippedArtifactCount: classification.skippedArtifactCount ?? 0,
+    reorderedArtifactCount: classification.reorderedArtifactCount ?? 0
   };
 }
 
-function classifyClipboardFailure(error: unknown): {
+function createOrderingFaultSummary(
+  batch: FeedbackCaptureBatch,
+  request: FeedbackImageCaptureRequest,
+  expectedStatus: "selected" | "copy-intent-recorded"
+): EvaluationSummary {
+  const duplicate = Boolean(findRequestedAttachment(batch, request, "accepted"));
+  const expected = findAttachment(batch, expectedStatus);
+  const wrongOrder = Boolean(expected && !isRequestedTuple(expected, request));
+  const skippedIntent = expectedStatus === "copy-intent-recorded" && Boolean(
+    findRequestedAttachment(batch, request, "selected")
+  );
+  return createImageEvaluationSummary({
+    completion: "incomplete",
+    correctness: "unverifiable",
+    acceptedArtifactCount: duplicate ? 1 : 0,
+    successfulFullDecodeCount: duplicate ? 1 : 0,
+    acceptedOrderMatched: false,
+    browserCopyActionCount: 0,
+    restartCount: 0,
+    cleanResume: false,
+    manualInterventionRequired: true,
+    interruptionBoundary: "before-intent",
+    duplicateArtifactCount: duplicate ? 1 : 0,
+    skippedArtifactCount: wrongOrder || skippedIntent ? 1 : 0,
+    reorderedArtifactCount: wrongOrder ? 1 : 0,
+    recovery: "needs-attention"
+  });
+}
+
+function tryClassifyEvaluation(
+  evaluation: FeedbackAcquisitionEvaluationScenario | undefined,
+  scenarioCode: string
+): void {
+  try {
+    evaluation?.classify(scenarioCode);
+  } catch {
+    // Evaluation must not affect acquisition behavior.
+  }
+}
+
+function classifyClipboardFailure(
+  error: unknown,
+  boundary: "before-copy" | "after-copy"
+): {
   scenarioCode: string;
   recovery: "needs-attention" | "terminal";
 } {
   const category = typeof error === "object" && error !== null && "category" in error
     ? error.category
     : undefined;
+  if (boundary === "before-copy") {
+    return category === "unsupported-platform"
+      ? { scenarioCode: "host-unsupported", recovery: "terminal" }
+      : { scenarioCode: "pasteboard-unavailable", recovery: "terminal" };
+  }
   if (category === "clipboard-unchanged") {
     return { scenarioCode: "clipboard-unchanged", recovery: "needs-attention" };
   }
@@ -402,10 +540,10 @@ function classifyClipboardFailure(error: unknown): {
     return { scenarioCode: "clipboard-multiple-images", recovery: "needs-attention" };
   }
   if (category === "unsupported-platform") {
-    return { scenarioCode: "host-unsupported", recovery: "terminal" };
+    return { scenarioCode: "host-unsupported-after-copy", recovery: "terminal" };
   }
   if (category === "helper-failed") {
-    return { scenarioCode: "pasteboard-unavailable", recovery: "terminal" };
+    return { scenarioCode: "pasteboard-unavailable-after-copy", recovery: "terminal" };
   }
   return { scenarioCode: "clipboard-unreadable", recovery: "needs-attention" };
 }
@@ -426,7 +564,7 @@ function findAttachment(
 function findRequestedAttachment(
   batch: FeedbackCaptureBatch,
   request: FeedbackImageCaptureRequest,
-  status: "accepted"
+  status: "selected" | "accepted"
 ) {
   for (const message of batch.messages) {
     const attachment = message.selectedAttachments.find(

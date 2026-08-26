@@ -85,7 +85,7 @@ describe("FeedbackImageAcquirer", () => {
       attachmentIndex: 0
     })).resolves.toEqual({ action: "captured" });
     expect(records).toEqual([expect.objectContaining({
-      scenarioCode: "single-valid-image",
+      scenarioCode: "image-capture",
       completion: "complete",
       correctness: "verified",
       expectedSelectedImageCount: 1,
@@ -111,6 +111,27 @@ describe("FeedbackImageAcquirer", () => {
       reorderedArtifactCount: 0,
       recovery: "automatic"
     })]);
+  });
+
+  it("does not let a stalled evaluation sink block a successful capture", async () => {
+    const acquirer = new FeedbackImageAcquirer(
+      new InMemoryRoundStateStore(intentRecordedRound("ESTALL")),
+      new FakeClipboardImageSource(41, {
+        observedChangeCount: 42,
+        pngBytes: new Uint8Array([1])
+      }),
+      new FakeArtifactStore("accepted-artifact"),
+      new FeedbackAcquisitionEvaluationRecorder(
+        new IncrementingMonotonicClock(),
+        { write: () => new Promise<boolean>(() => undefined) }
+      )
+    );
+
+    const result = await Promise.race([
+      acquirer.capture({ roundId: "ESTALL", messageOrdinal: 1, attachmentIndex: 0 }),
+      new Promise<"stalled">((resolve) => setTimeout(() => resolve("stalled"), 250))
+    ]);
+    expect(result).toEqual({ action: "captured" });
   });
 
   it("records controlled recovery classifications for clipboard ambiguity and restart", async () => {
@@ -242,7 +263,7 @@ describe("FeedbackImageAcquirer", () => {
       recovery: record.recovery
     }))).toEqual([
       {
-        scenarioCode: "single-valid-image",
+        scenarioCode: "image-prepare",
         completion: "incomplete",
         preparationMs: 2,
         browserCopyActionCount: 0,
@@ -258,6 +279,180 @@ describe("FeedbackImageAcquirer", () => {
         recovery: "terminal"
       }
     ]);
+  });
+
+  it("emits truthful records for returned clipboard, artifact, receipt, and order faults", async () => {
+    const cases: Array<{
+      expected: Partial<FeedbackAcquisitionEvaluationRecord>;
+      run: (evaluation: FeedbackAcquisitionEvaluationRecorder) => Promise<unknown>;
+    }> = [
+      {
+        expected: {
+          scenarioCode: "clipboard-unchanged",
+          successfulFullDecodeCount: 0,
+          skippedArtifactCount: 1,
+          recovery: "needs-attention"
+        },
+        run: (evaluation) => new FeedbackImageAcquirer(
+          new InMemoryRoundStateStore(intentRecordedRound("COUNT1")),
+          new FakeClipboardImageSource(41, {
+            observedChangeCount: 41,
+            pngBytes: new Uint8Array([1])
+          }),
+          unusedArtifacts(),
+          evaluation
+        ).capture({ roundId: "COUNT1", messageOrdinal: 1, attachmentIndex: 0 })
+      },
+      {
+        expected: {
+          scenarioCode: "clipboard-over-advanced",
+          successfulFullDecodeCount: 0,
+          skippedArtifactCount: 1,
+          recovery: "needs-attention"
+        },
+        run: (evaluation) => new FeedbackImageAcquirer(
+          new InMemoryRoundStateStore(intentRecordedRound("COUNT2")),
+          new FakeClipboardImageSource(41, {
+            observedChangeCount: 43,
+            pngBytes: new Uint8Array([1])
+          }),
+          unusedArtifacts(),
+          evaluation
+        ).capture({ roundId: "COUNT2", messageOrdinal: 1, attachmentIndex: 0 })
+      },
+      {
+        expected: {
+          scenarioCode: "clipboard-unreadable",
+          successfulFullDecodeCount: 0,
+          skippedArtifactCount: 1,
+          recovery: "needs-attention"
+        },
+        run: (evaluation) => new FeedbackImageAcquirer(
+          new InMemoryRoundStateStore(intentRecordedRound("BYTES")),
+          new FakeClipboardImageSource(41, {
+            observedChangeCount: 42,
+            pngBytes: new Uint8Array()
+          }),
+          unusedArtifacts(),
+          evaluation
+        ).capture({ roundId: "BYTES", messageOrdinal: 1, attachmentIndex: 0 })
+      },
+      {
+        expected: {
+          scenarioCode: "artifact-install-failed",
+          successfulFullDecodeCount: 0,
+          skippedArtifactCount: 1,
+          recovery: "needs-attention"
+        },
+        run: (evaluation) => new FeedbackImageAcquirer(
+          new InMemoryRoundStateStore(intentRecordedRound("INSTALL")),
+          new FakeClipboardImageSource(41, {
+            observedChangeCount: 42,
+            pngBytes: new Uint8Array([1])
+          }),
+          new FakeArtifactStore("unused", new Error("private install failure")),
+          evaluation
+        ).capture({ roundId: "INSTALL", messageOrdinal: 1, attachmentIndex: 0 })
+      },
+      {
+        expected: {
+          scenarioCode: "receipt-persistence-failed",
+          acceptedArtifactCount: 0,
+          successfulFullDecodeCount: 1,
+          skippedArtifactCount: 1,
+          interruptionBoundary: "after-install-before-receipt",
+          recovery: "needs-attention"
+        },
+        run: (evaluation) => new FeedbackImageAcquirer(
+          new FailNextSaveRoundStateStore(intentRecordedRound("RECEIPT")),
+          new FakeClipboardImageSource(41, {
+            observedChangeCount: 42,
+            pngBytes: new Uint8Array([1])
+          }),
+          new FakeArtifactStore("installed-artifact"),
+          evaluation
+        ).capture({ roundId: "RECEIPT", messageOrdinal: 1, attachmentIndex: 0 })
+      },
+      {
+        expected: {
+          scenarioCode: "artifact-validation-failed",
+          acceptedArtifactCount: 1,
+          successfulFullDecodeCount: 0,
+          skippedArtifactCount: 1,
+          recovery: "needs-attention"
+        },
+        run: (evaluation) => new FeedbackImageAcquirer(
+          new InMemoryRoundStateStore(acceptedRound("VALIDATE")),
+          new FakeClipboardImageSource(41),
+          new FakeArtifactStore("accepted-artifact", new Error("unused"), new Error("private validation failure")),
+          evaluation
+        ).prepare({ roundId: "VALIDATE", messageOrdinal: 1, attachmentIndex: 0 })
+      },
+      {
+        expected: {
+          scenarioCode: "selection-order-changed",
+          skippedArtifactCount: 1,
+          reorderedArtifactCount: 1,
+          recovery: "needs-attention"
+        },
+        run: (evaluation) => new FeedbackImageAcquirer(
+          new InMemoryRoundStateStore(plannedRound("ORDER")),
+          new FakeClipboardImageSource(41),
+          unusedArtifacts(),
+          evaluation
+        ).prepare({ roundId: "ORDER", messageOrdinal: 2, attachmentIndex: 0 })
+      },
+      {
+        expected: {
+          scenarioCode: "selection-order-changed",
+          skippedArtifactCount: 1,
+          reorderedArtifactCount: 0,
+          recovery: "needs-attention"
+        },
+        run: (evaluation) => new FeedbackImageAcquirer(
+          new InMemoryRoundStateStore(plannedRound("SKIPPED")),
+          new FakeClipboardImageSource(41),
+          unusedArtifacts(),
+          evaluation
+        ).capture({ roundId: "SKIPPED", messageOrdinal: 1, attachmentIndex: 0 })
+      },
+      {
+        expected: {
+          scenarioCode: "selection-order-changed",
+          acceptedArtifactCount: 1,
+          successfulFullDecodeCount: 1,
+          duplicateArtifactCount: 1,
+          skippedArtifactCount: 0,
+          reorderedArtifactCount: 0,
+          recovery: "needs-attention"
+        },
+        run: (evaluation) => new FeedbackImageAcquirer(
+          new InMemoryRoundStateStore(acceptedRound("DUPLICATE")),
+          new FakeClipboardImageSource(41),
+          unusedArtifacts(),
+          evaluation
+        ).capture({ roundId: "DUPLICATE", messageOrdinal: 1, attachmentIndex: 0 })
+      }
+    ];
+
+    for (const { expected, run } of cases) {
+      const records: FeedbackAcquisitionEvaluationRecord[] = [];
+      await run(new FeedbackAcquisitionEvaluationRecorder(
+        new IncrementingMonotonicClock(),
+        { write: async (record) => { records.push(record); return true; } }
+      ));
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        completion: "incomplete",
+        correctness: "unverifiable",
+        expectedSelectedImageCount: 1,
+        browserCopyActionCount: expected.scenarioCode?.startsWith("clipboard-") ||
+          expected.scenarioCode === "artifact-install-failed" ||
+          expected.scenarioCode === "receipt-persistence-failed" ? 1 : 0,
+        manualInterventionRequired: true,
+        ...expected
+      });
+    }
   });
 
   it.each([
@@ -420,6 +615,11 @@ class FakeMonotonicClock {
   }
 }
 
+class IncrementingMonotonicClock {
+  private value = 0;
+  public now(): number { return this.value++; }
+}
+
 class FakeArtifactStore implements RoundArtifactStore {
   public readonly accepted: Array<{
     roundId: string;
@@ -428,7 +628,11 @@ class FakeArtifactStore implements RoundArtifactStore {
     pngBytes: Uint8Array;
   }> = [];
 
-  public constructor(private readonly imagePath: string, private readonly error?: Error) {}
+  public constructor(
+    private readonly imagePath: string,
+    private readonly error?: Error,
+    private readonly validationError?: Error
+  ) {}
 
   public async acceptFeedbackImageBytes(
     roundId: string,
@@ -446,7 +650,12 @@ class FakeArtifactStore implements RoundArtifactStore {
   public async acceptBaseImage(): Promise<string> { return ""; }
   public async acceptResultImage(): Promise<string> { return ""; }
   public async requireResultImage(): Promise<string> { return ""; }
-  public async requireFeedbackImage(): Promise<string> { return ""; }
+  public async requireFeedbackImage(): Promise<string> {
+    if (this.validationError) {
+      throw this.validationError;
+    }
+    return this.imagePath;
+  }
   public async copyResultAsBase(): Promise<string> { return ""; }
   public async discardUnpersistedBase(): Promise<void> {}
 }
@@ -477,6 +686,23 @@ class InMemoryRoundStateStore implements RoundStateStore {
     }
     this.current = round;
     this.saved.push(round);
+  }
+}
+
+class FailNextSaveRoundStateStore implements RoundStateStore {
+  private failed = false;
+
+  public constructor(private current: RoundState) {}
+  public async get(roundId: string): Promise<RoundState | undefined> {
+    return this.current.id === roundId ? this.current : undefined;
+  }
+  public async list(): Promise<RoundState[]> { return [this.current]; }
+  public async save(round: RoundState): Promise<void> {
+    if (!this.failed) {
+      this.failed = true;
+      throw new Error("private receipt persistence failure");
+    }
+    this.current = round;
   }
 }
 

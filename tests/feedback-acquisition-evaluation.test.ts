@@ -100,8 +100,13 @@ describe("feedback acquisition evaluation", () => {
     }
   });
 
-  it("classifies the fixed fault matrix without duplicate, skipped, or reordered artifacts", () => {
-    expect(FEEDBACK_ACQUISITION_FAULT_MATRIX).toEqual([
+  it("classifies the fixed fault matrix with truthful integrity counts", () => {
+    expect(FEEDBACK_ACQUISITION_FAULT_MATRIX.map((row) => ({
+      scenarioCode: row.scenarioCode,
+      completion: row.completion,
+      browserCopyActionCount: row.browserCopyActionCount,
+      recovery: row.recovery
+    }))).toEqual([
       ["single-valid-image", "complete", 1, "automatic"],
       ["multiple-valid-images", "complete", 2, "automatic"],
       ["unsupported-or-excess-attachments", "complete", 0, "automatic"],
@@ -136,11 +141,17 @@ describe("feedback acquisition evaluation", () => {
       scenarioCode,
       completion,
       browserCopyActionCount,
-      duplicateArtifactCount: 0,
-      skippedArtifactCount: 0,
-      reorderedArtifactCount: 0,
       recovery
     })));
+    expect(FEEDBACK_ACQUISITION_FAULT_MATRIX.find(
+      (row) => row.scenarioCode === "selection-order-changed"
+    )).toMatchObject({ skippedArtifactCount: 1, reorderedArtifactCount: 1 });
+    expect(FEEDBACK_ACQUISITION_FAULT_MATRIX.find(
+      (row) => row.scenarioCode === "artifact-aliased"
+    )).toMatchObject({ duplicateArtifactCount: 1 });
+    expect(FEEDBACK_ACQUISITION_FAULT_MATRIX.find(
+      (row) => row.scenarioCode === "clipboard-empty"
+    )).toMatchObject({ skippedArtifactCount: 1 });
     expect(FAILED_BROWSER_DOWNLOAD_BASELINE).toEqual({
       scenarioCode: "browser-download-baseline",
       completion: "incomplete",
@@ -217,6 +228,20 @@ describe("feedback acquisition evaluation", () => {
       completion: "complete",
       reportWritten: false
     });
+  });
+
+  it("bounds a never-settling report sink so production cannot be blocked", async () => {
+    const scenario = new FeedbackAcquisitionEvaluationRecorder(
+      new FakeMonotonicClock([0, 1]),
+      { write: () => new Promise<boolean>(() => undefined) }
+    ).start("single-valid-image");
+
+    const outcome = await Promise.race([
+      scenario.finish(validSummary()),
+      new Promise<"stalled">((resolve) => setTimeout(() => resolve("stalled"), 250))
+    ]);
+
+    expect(outcome).toEqual({ completion: "complete", reportWritten: false });
   });
 });
 

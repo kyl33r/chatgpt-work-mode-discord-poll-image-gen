@@ -106,23 +106,96 @@ describe("round CLI lifecycle", () => {
     expect(evaluationRecords).toHaveLength(2);
     expect(evaluationRecords.map((record) => ({
       scenarioCode: record.scenarioCode,
+      completion: record.completion,
+      expectedSelectedImageCount: record.expectedSelectedImageCount,
       acceptedArtifactCount: record.acceptedArtifactCount,
       browserCopyActionCount: record.browserCopyActionCount,
       recovery: record.recovery
     }))).toEqual([
       {
-        scenarioCode: "multiple-valid-images",
+        scenarioCode: "image-capture",
+        completion: "complete",
+        expectedSelectedImageCount: 1,
         acceptedArtifactCount: 1,
         browserCopyActionCount: 1,
         recovery: "automatic"
       },
       {
-        scenarioCode: "multiple-valid-images",
-        acceptedArtifactCount: 2,
+        scenarioCode: "image-capture",
+        completion: "complete",
+        expectedSelectedImageCount: 1,
+        acceptedArtifactCount: 1,
         browserCopyActionCount: 1,
         recovery: "automatic"
       }
     ]);
+
+    const faultStore = new JsonRoundStateStore(join(directory, "fault-rounds"));
+    await faultStore.save((await store.get("RCLIP"))!);
+    const orderingRecords: FeedbackAcquisitionEvaluationRecord[] = [];
+    const orderingEvaluation = new FeedbackAcquisitionEvaluationRecorder(
+      new SequenceMonotonicClock([20, 21, 22, 23]),
+      {
+        write: async (record) => {
+          orderingRecords.push(record);
+          return true;
+        }
+      }
+    );
+    await expect(runCommand(
+      "collect-messages",
+      {
+        roundId: "RCLIP",
+        boundaryMessageUrl,
+        messages: [...messages].reverse()
+      },
+      faultStore,
+      { artifacts, evaluation: orderingEvaluation }
+    )).resolves.toMatchObject({ action: "needs-attention" });
+    expect(orderingRecords).toEqual([expect.objectContaining({
+      scenarioCode: "selection-order-changed",
+      completion: "incomplete",
+      expectedSelectedImageCount: 2,
+      acceptedArtifactCount: 2,
+      successfulFullDecodeCount: 0,
+      acceptedOrderMatched: false,
+      browserCopyActionCount: 2,
+      duplicateArtifactCount: 0,
+      skippedArtifactCount: 0,
+      reorderedArtifactCount: 1,
+      recovery: "needs-attention"
+    })]);
+
+    const validationStore = new JsonRoundStateStore(join(directory, "validation-rounds"));
+    await validationStore.save((await store.get("RCLIP"))!);
+    const validationRecords: FeedbackAcquisitionEvaluationRecord[] = [];
+    await expect(runCommand(
+      "collect-messages",
+      { roundId: "RCLIP", boundaryMessageUrl, messages },
+      validationStore,
+      {
+        artifacts: new FakeClipboardArtifacts(new Error("private validation failure")),
+        evaluation: new FeedbackAcquisitionEvaluationRecorder(
+          new SequenceMonotonicClock([30, 31, 32, 33]),
+          {
+            write: async (record) => {
+              validationRecords.push(record);
+              return true;
+            }
+          }
+        )
+      }
+    )).resolves.toMatchObject({ action: "needs-attention" });
+    expect(validationRecords).toEqual([expect.objectContaining({
+      scenarioCode: "artifact-validation-failed",
+      completion: "incomplete",
+      expectedSelectedImageCount: 2,
+      acceptedArtifactCount: 2,
+      successfulFullDecodeCount: 0,
+      browserCopyActionCount: 2,
+      skippedArtifactCount: 1,
+      recovery: "needs-attention"
+    })]);
 
     await expect(runCommand(
       "collect-messages",
@@ -375,6 +448,8 @@ class FakeClipboardArtifacts implements RoundArtifactStore {
     imagePath: string;
   }> = [];
 
+  public constructor(private readonly validationError?: Error) {}
+
   public async acceptBaseImage(_roundId: string, candidatePath: string): Promise<string> {
     return candidatePath;
   }
@@ -401,6 +476,9 @@ class FakeClipboardArtifacts implements RoundArtifactStore {
     attachmentIndex: number,
     imagePath: string
   ): Promise<string> {
+    if (this.validationError) {
+      throw this.validationError;
+    }
     this.requiredFeedbackImages.push({ roundId, messageOrdinal, attachmentIndex, imagePath });
     return imagePath;
   }

@@ -46,6 +46,7 @@ export const FEEDBACK_ACQUISITION_EVALUATION_REPORT_ROOT = join(
 export const FEEDBACK_ACQUISITION_EVALUATION_FILE_PREFIX = "evaluation-";
 export const FEEDBACK_ACQUISITION_EVALUATION_FILE_EXTENSION = ".json";
 export const FEEDBACK_ACQUISITION_EVALUATION_FILE_ATTEMPT_LIMIT = 999_999;
+export const FEEDBACK_ACQUISITION_EVALUATION_SINK_TIMEOUT_MS = 50;
 export const FEEDBACK_ACQUISITION_EVALUATION_PHASES = [
   "preparation",
   "browser-action",
@@ -79,6 +80,8 @@ export const FEEDBACK_ACQUISITION_EVALUATION_INTERRUPTION_BOUNDARIES = [
   "after-collection"
 ] as const;
 export const FEEDBACK_ACQUISITION_EVALUATION_SCENARIO_CODES = [
+  "image-prepare",
+  "image-capture",
   "single-valid-image",
   "multiple-valid-images",
   "unsupported-or-excess-attachments",
@@ -107,8 +110,13 @@ export const FEEDBACK_ACQUISITION_EVALUATION_SCENARIO_CODES = [
   "artifact-aliased",
   "artifact-outside-capsule",
   "artifact-pre-existing",
+  "artifact-validation-failed",
+  "artifact-install-failed",
+  "receipt-persistence-failed",
   "host-unsupported",
   "pasteboard-unavailable",
+  "host-unsupported-after-copy",
+  "pasteboard-unavailable-after-copy",
   "browser-download-baseline"
 ] as const;
 export const BASE_IMAGE_STAGING_ROOT = ROUND_STATE_ROOT;
