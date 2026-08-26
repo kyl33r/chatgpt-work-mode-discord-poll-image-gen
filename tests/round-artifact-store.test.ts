@@ -53,7 +53,7 @@ describe("JsonRoundArtifactStore", () => {
     const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
     await mkdir(feedbackRoot, { recursive: true });
     const artifacts = new JsonRoundArtifactStore(roundsRoot, {
-      renameFeedbackImage: async () => {
+      installFeedbackImageNoReplace: async () => {
         throw new Error("simulated rename failure");
       }
     });
@@ -62,6 +62,26 @@ describe("JsonRoundArtifactStore", () => {
       "Feedback image bytes cannot be installed safely."
     );
     await expect(readdir(feedbackRoot)).resolves.toEqual([]);
+  });
+
+  it("does not replace a destination created after pre-install validation", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    const destination = join(feedbackRoot, "message-1-attachment-0.png");
+    const concurrentlyInstalledBytes = await validPng();
+    await mkdir(feedbackRoot, { recursive: true });
+    const artifacts = new JsonRoundArtifactStore(roundsRoot, {
+      beforeInstallFeedbackImage: async (candidate) => {
+        await writeFile(candidate, concurrentlyInstalledBytes, { mode: 0o600 });
+      }
+    });
+
+    await expect(artifacts.acceptFeedbackImageBytes("R001", 1, 0, await validPng())).rejects.toThrow(
+      "Feedback image bytes cannot be installed safely."
+    );
+    expect(await readFile(destination)).toEqual(concurrentlyInstalledBytes);
+    await expect(readdir(feedbackRoot)).resolves.toEqual(["message-1-attachment-0.png"]);
   });
 
   it("leaves no destination when exclusive temporary staging fails", async () => {

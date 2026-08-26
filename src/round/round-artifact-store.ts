@@ -2,12 +2,12 @@ import { constants as fsConstants } from "node:fs";
 import {
   chmod,
   copyFile,
+  link,
   lstat,
   mkdir,
   open,
   readdir,
   realpath,
-  rename,
   rm,
   rmdir,
   unlink
@@ -61,7 +61,8 @@ export interface RoundArtifactStore {
 }
 
 export interface JsonRoundArtifactStoreOptions {
-  renameFeedbackImage?: (temporaryPath: string, destination: string) => Promise<void>;
+  beforeInstallFeedbackImage?: (destination: string) => Promise<void>;
+  installFeedbackImageNoReplace?: (temporaryPath: string, destination: string) => Promise<void>;
   writeFeedbackImageTemporaryFile?: (temporaryPath: string, pngBytes: Uint8Array) => Promise<void>;
 }
 
@@ -160,7 +161,11 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
         throw new Error(errorMessage);
       }
       await this.requireMissingDestination(destination, errorMessage);
-      await (this.options.renameFeedbackImage ?? rename)(temporaryPath, destination);
+      await this.options.beforeInstallFeedbackImage?.(destination);
+      await (this.options.installFeedbackImageNoReplace ?? installFeedbackImageWithoutReplacement)(
+        temporaryPath,
+        destination
+      );
       temporaryCreated = false;
       await chmod(destination, PRIVATE_FILE_MODE);
       return await this.requireFeedbackImage(roundId, messageOrdinal, attachmentIndex, destination);
@@ -441,4 +446,12 @@ async function writePrivateFileExclusively(temporaryPath: string, pngBytes: Uint
   } finally {
     await file.close();
   }
+}
+
+async function installFeedbackImageWithoutReplacement(
+  temporaryPath: string,
+  destination: string
+): Promise<void> {
+  await link(temporaryPath, destination);
+  await unlink(temporaryPath);
 }
