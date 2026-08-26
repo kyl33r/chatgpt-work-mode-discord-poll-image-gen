@@ -207,6 +207,7 @@ function isConversationObservation(value: unknown): value is ConversationObserva
     isConversationAuthor(value.author) &&
     typeof value.timestamp === "string" &&
     Array.isArray(value.attachments) &&
+    isDenseArray(value.attachments) &&
     value.attachments.every(isConversationAttachmentObservation)
   );
 }
@@ -247,5 +248,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
-  return Object.keys(value).every((key) => allowedKeys.includes(key));
+  return Reflect.ownKeys(value).every((key) => typeof key === "string" && allowedKeys.includes(key));
+}
+
+function isDenseArray(value: readonly unknown[]): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(value, index)) {
+      return false;
+    }
+  }
+  return true;
 }

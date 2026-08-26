@@ -274,6 +274,58 @@ describe("parseConversation", () => {
     );
   });
 
+  it("rejects an attachment with a non-enumerable forbidden extra key", () => {
+    const request = validParseRequest();
+    const privateValue = "private-hidden-image-path";
+    const attachmentWithHiddenExtraKey = {
+      index: 0,
+      mediaType: "image/png",
+      selection: "selection:opaque"
+    };
+    Object.defineProperty(attachmentWithHiddenExtraKey, "imagePath", {
+      enumerable: false,
+      value: privateValue
+    });
+
+    expectControlledObservationError(
+      () =>
+        parseConversation({
+          ...request,
+          observation: {
+            ...request.observation,
+            messages: [
+              { ...message("ordinary-text", "Visible text", "discord-message:ordinary"), attachments: [attachmentWithHiddenExtraKey] }
+            ]
+          }
+        } as never),
+      privateValue
+    );
+  });
+
+  it("rejects a sparse attachment array with a controlled privacy-safe error", () => {
+    const request = validParseRequest();
+    const privateSelection = "private-sparse-selection";
+    const sparseAttachments: ConversationObservation["attachments"][number][] = [];
+    sparseAttachments[1] = attachment(1, "image/png", privateSelection);
+
+    expectControlledObservationError(
+      () =>
+        parseConversation({
+          ...request,
+          observation: {
+            ...request.observation,
+            messages: [
+              {
+                ...message("ordinary-text", "Visible text", "discord-message:ordinary"),
+                attachments: sparseAttachments
+              }
+            ]
+          }
+        }),
+      privateSelection
+    );
+  });
+
   it("rejects a negative attachment index with a privacy-safe order error", () => {
     const request = validParseRequest();
     const privateSelection = "private-negative-selection";
