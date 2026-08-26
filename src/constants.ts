@@ -22,6 +22,8 @@ export const DISCORD_CHANNEL_ALLOWLIST_MIGRATION_PATH = join(
   "discord-channel-allowlist-v1.json"
 );
 export const WORKFLOW_LOCK_PATH = join(STATE_ROOT, ".workflow.lock");
+export const CLIPBOARD_HELPER_PROTOCOL_VERSION = 1;
+export const CLIPBOARD_HELPER_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 export const ROUND_STATE_ROOT = join(STATE_ROOT, "rounds");
 export const ROUND_STATE_FILE_NAME = "round.json";
 export const ROUND_MIGRATIONS_DIRECTORY_NAME = "migrations";

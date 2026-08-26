@@ -21,6 +21,7 @@ import { JsonDiscordChannelAllowlistStore } from "./config/discord-channel-allow
 import type { DiscordChannelAllowlistStore } from "./config/discord-channel-allowlist.js";
 import { resolveDiscordChannel } from "./config/resolve-discord-channel.js";
 import type { ClipboardImageSource } from "./clipboard/clipboard-image-source.js";
+import { MacOsClipboardImageSource } from "./clipboard/macos-clipboard-image-source.js";
 import {
   collectMessages,
   MessageCollectionAmbiguityError,
@@ -1031,6 +1032,7 @@ async function main(): Promise<void> {
     {
       allowlist: new JsonDiscordChannelAllowlistStore(DISCORD_CHANNEL_ALLOWLIST_PATH),
       artifacts: new JsonRoundArtifactStore(ROUND_STATE_ROOT),
+      clipboard: new MacOsClipboardImageSource(),
       workflowLock: new FileWorkflowLock(WORKFLOW_LOCK_PATH)
     }
   );
