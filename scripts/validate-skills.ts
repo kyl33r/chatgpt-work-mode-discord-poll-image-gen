@@ -152,6 +152,14 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
         issues.push("round-start: Work-mode imagegen invocation is missing.");
       }
     }
+    if (
+      (skillName === "round-start" || skillName === "get-discord-polls") &&
+      !skillMarkdown.includes(
+        "Edit the supplied base image using this synthesized participant feedback:"
+      )
+    ) {
+      issues.push(`${skillName}: exact Synthesized Prompt preamble is missing.`);
+    }
 
     const agentYaml = await readFile(resolve(skillRoot, "agents/openai.yaml"), "utf8");
     for (const field of ["display_name", "short_description", "default_prompt"] as const) {

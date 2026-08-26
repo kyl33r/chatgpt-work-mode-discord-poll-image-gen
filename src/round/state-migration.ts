@@ -1,6 +1,6 @@
 import { constants as fsConstants } from "node:fs";
-import { access, copyFile, mkdir, readFile, realpath, stat } from "node:fs/promises";
-import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { access, copyFile, mkdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   FEEDBACK_MESSAGE_LIMIT,
@@ -40,7 +40,8 @@ interface LegacyRound {
 export async function migrateLegacyState(
   paths: StateMigrationPaths
 ): Promise<StateMigrationResult> {
-  if (await pathExists(paths.newStatePath)) {
+  const stateRoot = dirname(resolve(paths.newStatePath));
+  if (await pathExists(paths.newStatePath) || await pathExists(stateRoot)) {
     throw new Error("Durable round state already exists; migration was not run.");
   }
 
@@ -50,16 +51,14 @@ export async function migrateLegacyState(
     legacyRound.baseImagePath,
     paths.legacyBaseImageRoot
   );
+  const stateRelativePath = requireContainedDestination(paths.newStatePath, stateRoot);
+  const baseRootRelativePath = requireContainedDestination(paths.newBaseImageRoot, stateRoot);
+  const migrationRootRelativePath = requireContainedDestination(paths.migrationRoot, stateRoot);
   const resultImageName = `${legacyRound.id}${extname(legacyBaseImagePath).toLowerCase()}`;
   const newBaseImagePath = resolve(paths.newBaseImageRoot, resultImageName);
-
-  await mkdir(paths.newBaseImageRoot, { recursive: true });
-  await mkdir(paths.migrationRoot, { recursive: true });
-  await copyFile(legacyBaseImagePath, newBaseImagePath, fsConstants.COPYFILE_EXCL);
-  await copyFile(
-    paths.legacyStatePath,
-    join(paths.migrationRoot, "rounds-v2.json"),
-    fsConstants.COPYFILE_EXCL
+  const temporaryRoot = join(
+    dirname(stateRoot),
+    `.${basename(stateRoot)}.migration-${process.pid}-${Date.now()}`
   );
 
   const migratedRound: RoundState = {
@@ -73,8 +72,41 @@ export async function migrateLegacyState(
     collectionStartedAt: legacyRound.collectionStartedAt,
     capturedMessages: legacyRound.capturedMessages
   };
-  await new JsonRoundStateStore(paths.newStatePath).save(migratedRound);
+  try {
+    const stagedBaseRoot = join(temporaryRoot, baseRootRelativePath);
+    const stagedMigrationRoot = join(temporaryRoot, migrationRootRelativePath);
+    await mkdir(stagedBaseRoot, { recursive: true });
+    await mkdir(stagedMigrationRoot, { recursive: true });
+    await copyFile(
+      legacyBaseImagePath,
+      join(stagedBaseRoot, resultImageName),
+      fsConstants.COPYFILE_EXCL
+    );
+    await copyFile(
+      paths.legacyStatePath,
+      join(stagedMigrationRoot, "rounds-v2.json"),
+      fsConstants.COPYFILE_EXCL
+    );
+    await new JsonRoundStateStore(join(temporaryRoot, stateRelativePath)).save(migratedRound);
+    await rename(temporaryRoot, stateRoot);
+  } catch (error) {
+    await rm(temporaryRoot, { recursive: true, force: true });
+    throw error;
+  }
   return { migrated: true, roundId: migratedRound.id, phase: "synthesizing-feedback" };
+}
+
+function requireContainedDestination(path: string, root: string): string {
+  const relativePath = relative(root, resolve(path));
+  if (
+    relativePath.length === 0 ||
+    relativePath === ".." ||
+    relativePath.startsWith(`..${sep}`) ||
+    isAbsolute(relativePath)
+  ) {
+    throw new Error("Migration destinations must reside beneath the durable state directory.");
+  }
+  return relativePath;
 }
 
 function parseSupportedLegacyRound(contents: string): LegacyRound {
@@ -175,9 +207,16 @@ async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return false;
+    }
+    throw error;
   }
+}
+
+function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

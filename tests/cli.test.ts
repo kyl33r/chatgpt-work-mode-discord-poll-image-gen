@@ -110,7 +110,7 @@ describe("executeCommand", () => {
     expect(await executeCommand("prepare-prompt-synthesis", { roundId: "R001" }, store)).toEqual({
       action: "synthesize-prompt",
       roundId: "R001",
-      capturedMessages: [1, 2, 3, 4, 5].map(captured)
+      feedbackTexts: [1, 2, 3, 4, 5].map((index) => `random message ${index}`)
     });
 
     expect(

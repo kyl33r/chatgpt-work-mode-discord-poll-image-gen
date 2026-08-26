@@ -270,7 +270,7 @@ async function preparePromptSynthesis(
   return {
     action: "synthesize-prompt",
     roundId: round.id,
-    capturedMessages: round.capturedMessages
+    feedbackTexts: round.capturedMessages.map((message) => message.text)
   };
 }
 

@@ -4,7 +4,7 @@
 
 - Never expose secrets or private identifiers in ChatGPT, Discord, command-output summaries, documentation, commits, generated artifacts, or review comments.
 - Treat `.env`, `.state/`, `.runtime/`, authentication output, private Discord channel/message URLs, tokens, cookies, passwords, API keys, browser-session data, and local credential stores as sensitive.
-- Never print, quote, summarize, commit, or paste the contents of `.env`, `.state/`, or `.runtime/` into any chat.
+- Never print, quote, commit, or paste raw contents of `.env`, `.state/`, or `.runtime/` into user-facing chat. The sole allowed derivative is the validated public Synthesized Prompt produced through the documented round workflow; never reproduce raw Captured Messages or their metadata.
 - Refer to sensitive destinations with neutral descriptions such as “the allowlisted Discord channel.”
 - If a tool unexpectedly reveals sensitive data, do not repeat it. Redact it from all user-facing output and stop if continued work could expose it further.
 - Never put raw image-generation errors, provider responses, internal instructions, local paths, or hidden reasoning into Discord. Use only the controlled public outcome templates in `src/constants.ts`.

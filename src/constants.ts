@@ -37,6 +37,9 @@ export const SYNTHESIZED_PROMPT_PROHIBITED_PATTERNS = [
   /\.(?:env|runtime|state)(?:[\\/]|\b)/i,
   /(?:\/Users\/|\/home\/|[A-Za-z]:\\)/,
   /=====/,
+  /\[[^\]]+\]\([^)]+\)/,
   /\b(?:password|secret|token|api[-_ ]?key|cookie|credential)\b/i,
-  /(?:prepare|confirm|collect|stop|mark|plan)-(?:base|collection|generation|publication|messages|round|attention|next)/i
+  /(?:prepare|confirm|collect|stop|mark|plan)-(?:base|collection|generation|publication|messages|round|attention|next|prompt-synthesis|synthesized-prompt)/i,
+  /\b(?:ignore|override|bypass|disable|change|set|increase|decrease)\b.{0,50}\b(?:discord channel|channel destination|message limit|five-message limit|security|workflow|control flow)\b/i,
+  /\b(?:discord channel|channel destination|message limit|five-message limit|security|workflow|control flow)\b.{0,50}\b(?:ignore|override|bypass|disable|change|set|increase|decrease)\b/i
 ] as const;

@@ -80,9 +80,7 @@ describe("round CLI lifecycle", () => {
     ).toMatchObject({
       action: "synthesize-prompt",
       roundId: "R100",
-      capturedMessages: Array.from({ length: 5 }, (_, index) => ({
-        text: `change ${index + 1}`
-      }))
+      feedbackTexts: Array.from({ length: 5 }, (_, index) => `change ${index + 1}`)
     });
 
     const synthesizedPrompt =

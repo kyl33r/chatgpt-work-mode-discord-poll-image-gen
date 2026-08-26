@@ -82,6 +82,15 @@ describe("migrateLegacyState", () => {
     );
     expect(await readFile(paths.newStatePath, "utf8")).toBe("existing");
   });
+
+  it("removes staged output when commit preparation fails", async () => {
+    const paths = await createMigrationFixture();
+    const stateRoot = join(paths.newStatePath, "..");
+    paths.newStatePath = paths.newBaseImageRoot;
+
+    await expect(migrateLegacyState(paths)).rejects.toThrow();
+    await expect(access(stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
 
 async function createMigrationFixture(overrides: Record<string, unknown> = {}) {
