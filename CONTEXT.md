@@ -32,6 +32,10 @@ _Avoid_: Feedback summary, regenerated prompt, raw message compilation
 The restart-critical JSON record and image artifacts stored beneath the worktree-local `.state/` directory.
 _Avoid_: Runtime payload, database
 
+**Round State Capsule**:
+The isolated durable state owned by one Feedback Round. A capsule never shares a mutable JSON record or image artifact with another round.
+_Avoid_: Global round file, shared state bucket
+
 **Result Image**:
 The single edited image produced when the image-edit attempt succeeds.
 _Avoid_: Generation, output asset

@@ -1,6 +1,6 @@
 # Round Start Orchestration and Synthesized Prompt Design
 
-Status: Approved for implementation on 2026-08-26. The owner explicitly requested implementation to continue without a separate written-spec review pause.
+Status: Approved for implementation on 2026-08-26. The workflow remains current; its shared-file state layout is refined by [Isolated Round State Capsules](2026-08-26-isolated-round-state-capsules-design.md).
 
 ## Purpose
 
