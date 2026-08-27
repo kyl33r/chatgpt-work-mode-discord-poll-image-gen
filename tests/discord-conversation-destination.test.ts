@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  ConversationDestinationError,
   resolveDiscordConversationDestination
 } from "../src/conversation/discord-conversation-destination.js";
+import { ConversationDestinationError } from "../src/conversation/conversation-parser.js";
 
 const SERVER_ID = "123456789012345";
 const CHANNEL_ID = "234567890123456";

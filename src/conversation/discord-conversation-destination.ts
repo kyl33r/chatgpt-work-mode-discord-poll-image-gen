@@ -1,18 +1,9 @@
 import { normalizeDiscordChannelUrl } from "../config/discord-channel-allowlist.js";
 import { DISCORD_CONVERSATION_PROVIDER } from "../constants.js";
-
-declare const conversationDestination: unique symbol;
-
-export type ConversationDestination = string & {
-  readonly [conversationDestination]: "ConversationDestination";
-};
-
-export class ConversationDestinationError extends Error {
-  public constructor() {
-    super("Discord conversation destination is invalid.");
-    this.name = "ConversationDestinationError";
-  }
-}
+import {
+  ConversationDestinationError,
+  type ConversationDestination
+} from "./conversation-parser.js";
 
 export function resolveDiscordConversationDestination(
   input: unknown,
@@ -78,8 +69,12 @@ function toConversationDestination({ serverId, channelId }: { serverId: string; 
 function isServerChannelPair(value: unknown): value is { serverId: string; channelId: string } {
   return (
     isRecord(value) &&
-    Object.keys(value).length === 2 &&
-    Object.keys(value).every((key) => key === "serverId" || key === "channelId") &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    Reflect.ownKeys(value).length === 2 &&
+    ["serverId", "channelId"].every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor !== undefined && "value" in descriptor && descriptor.enumerable;
+    }) &&
     typeof value.serverId === "string" &&
     typeof value.channelId === "string"
   );

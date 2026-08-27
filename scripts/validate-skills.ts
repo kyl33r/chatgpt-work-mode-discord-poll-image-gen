@@ -64,7 +64,7 @@ const REQUIRED_COMMANDS: Record<(typeof EXPECTED_SKILLS)[number], readonly strin
   "get-discord-polls": [
     "plan-next",
     "get-round",
-    "collect-messages",
+    "collect-conversation-snapshot",
     "prepare-prompt-synthesis",
     "confirm-synthesized-prompt",
     "confirm-collection-closed",
@@ -126,7 +126,11 @@ const OBSERVE_DISCORD_CONVERSATION_CONTRACTS = [
   "missing-boundary",
   "destination-mismatch",
   "Never automatically retry an uncertain observation.",
-  "Do not reproduce its destination, boundary, message limit, or any CLI handoff/output"
+  "Do not reproduce its destination, boundary, message limit, or any CLI handoff/output",
+  "Exact sanitized prepare payload shape",
+  "Exact sanitized observe payload shape",
+  "Exact sanitized source-failure payload shape",
+  "fixed `CONVERSATION_HANDOFF_ROOT`, validated `invocationId`, and fixed `CONVERSATION_HANDOFF_REQUEST_SUFFIX`"
 ] as const;
 
 const OBSERVATION_SKILL_NAME = "observe-discord-conversation";
@@ -371,11 +375,9 @@ export async function validateSkills(repositoryRoot: string): Promise<string[]> 
     }
   }
 
-  for (const integratedSkill of ["get-discord-polls", "round-start"] as const) {
-    const skillMarkdown = await readFile(resolve(skillsRoot, integratedSkill, "SKILL.md"), "utf8");
-    if (referencesObservationSkill(skillMarkdown)) {
-      issues.push(`${integratedSkill}: must not integrate the conversation observation skill.`);
-    }
+  const pollSkill = await readFile(resolve(skillsRoot, "get-discord-polls", "SKILL.md"), "utf8");
+  if (!referencesObservationSkill(pollSkill)) {
+    issues.push("get-discord-polls: reusable conversation observation integration is missing.");
   }
 
   return issues;

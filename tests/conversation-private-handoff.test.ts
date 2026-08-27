@@ -312,6 +312,28 @@ describe("JsonConversationPrivateHandoff", () => {
   });
 
   it.each([
+    ["empty", ""],
+    ["whitespace-only", "   \n"],
+    ["URL-like", "https://example.invalid/private-selection"],
+    ["absolute-path-like", "/private/local/selection"],
+    ["relative-path-like", "../private-selection"],
+    ["browser-handle-like", "browser-handle:element-42"]
+  ])("rejects a %s selection before writing a private snapshot", async (_description, selection) => {
+    const handoff = testHandoff(await temporaryDirectory());
+    const snapshot = validSnapshot();
+
+    await expect(
+      handoff.writeSnapshot("invocation-001", {
+        ...snapshot,
+        selectedAttachments: [
+          { ...snapshot.selectedAttachments[0]!, selection: selection as never }
+        ]
+      })
+    ).rejects.toBeInstanceOf(ConversationPrivateHandoffError);
+    await expect(handoff.readSnapshot("invocation-001")).resolves.toBeUndefined();
+  });
+
+  it.each([
     { ...validSnapshot(), unexpected: "private-snapshot-value" },
     {
       ...validSnapshot(),

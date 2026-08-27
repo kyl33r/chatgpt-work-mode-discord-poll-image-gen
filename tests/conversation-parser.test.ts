@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  ConversationDestinationError,
   resolveDiscordConversationDestination
 } from "../src/conversation/discord-conversation-destination.js";
 import {
@@ -11,6 +10,7 @@ import {
   type ConversationSource,
   type StableMessageIdentity,
   ConversationCheckpointError,
+  ConversationDestinationError,
   ConversationSourceError,
   parseConversation
 } from "../src/conversation/conversation-parser.js";
@@ -532,6 +532,24 @@ describe("parseConversation", () => {
     );
   });
 
+  it("rejects duplicate opaque attachment selections across messages", () => {
+    const privateSelection = "private-duplicate-selection";
+
+    expectControlledParserError(
+      () =>
+        parseMessages([
+          message("ordinary-text", "First visible message", "discord-message:first", "participant", undefined, [
+            attachment(0, "image/png", privateSelection)
+          ]),
+          message("ordinary-text", "Second visible message", "discord-message:second", "participant", undefined, [
+            attachment(0, "image/png", privateSelection)
+          ])
+        ]),
+      privateSelection,
+      "ConversationOrderError"
+    );
+  });
+
   it("rejects an empty stable message identity as an ordering ambiguity", () => {
     const request = validParseRequest();
 
@@ -617,6 +635,90 @@ describe("parseConversation", () => {
         }),
       privateTimestamp
     );
+  });
+
+  it("rejects a sparse observation message array with a controlled error", () => {
+    const request = validParseRequest();
+    const sparseMessages: ConversationObservation[] = [];
+    sparseMessages[1] = message(
+      "ordinary-text",
+      "Private sparse message",
+      "discord-message:sparse"
+    );
+
+    expectControlledObservationError(
+      () =>
+        parseConversation({
+          ...request,
+          observation: { ...request.observation, messages: sparseMessages }
+        }),
+      "Private sparse message"
+    );
+  });
+
+  it("rejects observation messages and authors with extra fields", () => {
+    const request = validParseRequest();
+    const privateExtra = "private-provider-field";
+    const validMessage = message(
+      "ordinary-text",
+      "Visible text",
+      "discord-message:ordinary"
+    );
+
+    for (const observedMessage of [
+      { ...validMessage, providerOnly: privateExtra },
+      { ...validMessage, author: { ...validMessage.author, providerOnly: privateExtra } }
+    ]) {
+      expectControlledObservationError(
+        () =>
+          parseConversation({
+            ...request,
+            observation: { ...request.observation, messages: [observedMessage] }
+          } as never),
+        privateExtra
+      );
+    }
+  });
+
+  it("rejects non-plain observation message and author records", () => {
+    const request = validParseRequest();
+    const validMessage = message(
+      "ordinary-text",
+      "Visible text",
+      "discord-message:ordinary"
+    );
+    const nonPlainMessage = Object.assign(Object.create(null), validMessage);
+    const nonPlainAuthor = Object.assign(Object.create(null), validMessage.author);
+
+    for (const observedMessage of [
+      nonPlainMessage,
+      { ...validMessage, author: nonPlainAuthor }
+    ]) {
+      expectControlledObservationError(
+        () =>
+          parseConversation({
+            ...request,
+            observation: { ...request.observation, messages: [observedMessage] }
+          } as never),
+        "private-non-plain-observation"
+      );
+    }
+  });
+
+  it("constructs an exact author record for every accepted message", () => {
+    const observed = message(
+      "ordinary-text",
+      "Visible text",
+      "discord-message:ordinary"
+    );
+    const snapshot = parseMessages([observed]);
+
+    expect(snapshot.messages[0]?.author).toEqual({
+      id: "participant",
+      name: "Participant"
+    });
+    expect(snapshot.messages[0]?.author).not.toBe(observed.author);
+    expect(Object.keys(snapshot.messages[0]!.author)).toEqual(["id", "name"]);
   });
 
   it("parses a boundary-relative qualifying prefix", async () => {
@@ -1023,6 +1125,34 @@ describe("parseConversation", () => {
           }
         }),
       privateSelection
+    );
+  });
+
+  it.each([
+    ["empty", ""],
+    ["whitespace-only", "   \n"],
+    ["URL-like", "https://example.invalid/private-selection"],
+    ["absolute-path-like", "/private/local/selection"],
+    ["relative-path-like", "../private-selection"],
+    ["browser-handle-like", "browser-handle:element-42"]
+  ])("rejects a %s opaque attachment selection", (_description, privateSelection) => {
+    const request = validParseRequest();
+
+    expectControlledObservationError(
+      () =>
+        parseConversation({
+          ...request,
+          observation: {
+            ...request.observation,
+            messages: [
+              {
+                ...message("ordinary-text", "Visible text", "discord-message:ordinary"),
+                attachments: [attachment(0, "image/png", privateSelection)]
+              }
+            ]
+          }
+        }),
+      privateSelection.length === 0 ? "private-empty-selection" : privateSelection
     );
   });
 

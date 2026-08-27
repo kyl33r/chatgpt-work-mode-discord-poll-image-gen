@@ -1,4 +1,6 @@
-import { resolveDiscordConversationDestination } from "./discord-conversation-destination.js";
+import {
+  resolveDiscordConversationDestination
+} from "./discord-conversation-destination.js";
 import type { DiscordChannelAllowlistStore } from "../config/discord-channel-allowlist.js";
 import {
   CONVERSATION_SOURCE_FAILURE_CATEGORIES,
@@ -9,6 +11,7 @@ import {
 import type { WorkflowLock } from "../workflow-lock.js";
 import type { ConversationPrivateHandoff } from "./conversation-private-handoff.js";
 import {
+  ConversationDestinationError,
   parseConversation,
   type ConversationCheckpoint,
   type ConversationObservationBatch,
@@ -47,7 +50,7 @@ export async function executeConversationCommand(
         return prepareConversation(record, dependencies);
       }
       if (record.mode === "observe") {
-        return observeConversation(record, dependencies.handoff);
+        return observeConversation(record, dependencies);
       }
       if (record.mode === "source-failure") {
         return recordSourceFailure(record);
@@ -90,14 +93,32 @@ async function prepareConversation(
 
 async function observeConversation(
   record: Record<string, unknown>,
-  handoff: ConversationPrivateHandoff
+  dependencies: ConversationCommandDependencies
 ): Promise<ConversationCommandResult> {
-  requireExactKeys(record, ["mode", "invocationId", "observation"], ["checkpoint"]);
+  requireExactKeys(record, ["mode", "invocationId", "observation"]);
   const invocationId = requireNonEmptyString(record.invocationId);
-  const request = await handoff.readRequest(invocationId);
+  const request = await dependencies.handoff.readRequest(invocationId);
   if (request === undefined) {
     throw new Error("Private conversation request is unavailable.");
   }
+  const configuredChannels = await dependencies.allowlist.getAll();
+  const currentDestination = resolveDiscordConversationDestination(
+    configuredChannels[0],
+    configuredChannels
+  );
+  if (request.destination !== currentDestination) {
+    throw new ConversationDestinationError();
+  }
+  const previousSnapshot = await dependencies.handoff.readSnapshot(invocationId);
+  const checkpoint: ConversationCheckpoint | undefined = previousSnapshot
+    ? {
+        ...previousSnapshot,
+        messageLimit: request.stopAfterQualifyingMessages,
+        attachmentLimitPerMessage: FEEDBACK_IMAGE_LIMIT_PER_MESSAGE,
+        attachmentLimitTotal: FEEDBACK_IMAGE_LIMIT_PER_ROUND,
+        supportedAttachmentMediaTypes: SUPPORTED_IMAGE_MIME_TYPES
+      }
+    : undefined;
 
   const snapshot = parseConversation({
     destination: request.destination,
@@ -106,12 +127,10 @@ async function observeConversation(
     attachmentLimitPerMessage: FEEDBACK_IMAGE_LIMIT_PER_MESSAGE,
     attachmentLimitTotal: FEEDBACK_IMAGE_LIMIT_PER_ROUND,
     supportedAttachmentMediaTypes: SUPPORTED_IMAGE_MIME_TYPES,
-    ...(record.checkpoint === undefined
-      ? {}
-      : { checkpoint: record.checkpoint as ConversationCheckpoint }),
+    ...(checkpoint === undefined ? {} : { checkpoint }),
     observation: record.observation as ConversationObservationBatch
   });
-  await handoff.writeSnapshot(invocationId, snapshot);
+  await dependencies.handoff.writeSnapshot(invocationId, snapshot);
   return {
     action: snapshot.complete ? "conversation-complete" : "wait",
     acceptedMessageCount: snapshot.messages.length,

@@ -188,7 +188,6 @@ function isRoundState(value: unknown, expectedRoundId: string): value is RoundSt
 function hasStableCapturedMessageOrder(messages: unknown[]): boolean {
   const messageUrls = new Set<string>();
   const imagePaths = new Set<string>();
-  let previousTimestamp = Number.NEGATIVE_INFINITY;
   for (const value of messages) {
     const message = value as {
       messageUrl: string;
@@ -198,12 +197,10 @@ function hasStableCapturedMessageOrder(messages: unknown[]): boolean {
     const timestamp = Date.parse(message.timestamp);
     if (
       !Number.isFinite(timestamp) ||
-      timestamp <= previousTimestamp ||
       messageUrls.has(message.messageUrl)
     ) {
       return false;
     }
-    previousTimestamp = timestamp;
     messageUrls.add(message.messageUrl);
     for (const image of message.contextImages) {
       if (imagePaths.has(image.imagePath)) {

@@ -11,6 +11,7 @@ import {
   CONVERSATION_HANDOFF_SNAPSHOT_SUFFIX,
   RUNTIME_ROOT
 } from "../constants.js";
+import { isOpaqueAttachmentSelection } from "./conversation-parser.js";
 import type {
   AttachmentSelection,
   ConversationObservationRequest,
@@ -269,15 +270,18 @@ function isConversationSnapshot(value: unknown): value is ConversationSnapshot {
 
   let previousMessageIndex = -1;
   let previousAttachmentIndex = -1;
+  const opaqueSelections = new Set<string>();
   for (const selection of value.selectedAttachments) {
     const messageIndex = identities.indexOf(selection.owner);
     if (
       messageIndex < 0 ||
       messageIndex < previousMessageIndex ||
-      (messageIndex === previousMessageIndex && selection.index <= previousAttachmentIndex)
+      (messageIndex === previousMessageIndex && selection.index <= previousAttachmentIndex) ||
+      opaqueSelections.has(selection.selection)
     ) {
       return false;
     }
+    opaqueSelections.add(selection.selection);
     previousMessageIndex = messageIndex;
     previousAttachmentIndex = selection.index;
   }
@@ -310,7 +314,7 @@ function isAttachmentSelection(value: unknown): value is AttachmentSelection {
     value.index >= 0 &&
     typeof value.mediaType === "string" &&
     value.mediaType.trim().length > 0 &&
-    typeof value.selection === "string"
+    isOpaqueAttachmentSelection(value.selection)
   );
 }
 

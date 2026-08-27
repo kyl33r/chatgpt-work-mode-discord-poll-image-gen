@@ -1,10 +1,17 @@
-import {
-  ConversationDestinationError,
-  type ConversationDestination
-} from "./discord-conversation-destination.js";
-
+declare const conversationDestination: unique symbol;
 declare const stableMessageIdentity: unique symbol;
 declare const opaqueAttachmentSelection: unique symbol;
+
+export type ConversationDestination = string & {
+  readonly [conversationDestination]: "ConversationDestination";
+};
+
+export class ConversationDestinationError extends Error {
+  public constructor() {
+    super("Conversation destination is invalid.");
+    this.name = "ConversationDestinationError";
+  }
+}
 
 export type StableMessageIdentity = string & {
   readonly [stableMessageIdentity]: "StableMessageIdentity";
@@ -13,6 +20,20 @@ export type StableMessageIdentity = string & {
 export type OpaqueAttachmentSelection = string & {
   readonly [opaqueAttachmentSelection]: "OpaqueAttachmentSelection";
 };
+
+export function isOpaqueAttachmentSelection(
+  value: unknown
+): value is OpaqueAttachmentSelection {
+  return (
+    typeof value === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value) &&
+    !/^(?:https?|file|data|blob|javascript|ftp|ws|wss):/i.test(value) &&
+    !/^[A-Za-z]:/.test(value) &&
+    !/^(?:browser(?:[-_]?handle)?|element(?:[-_]?handle)?|dom(?:[-_]?node)?|node(?:[-_]?handle)?|aria[-_]?ref|ref[-_]?id):/i.test(
+      value
+    )
+  );
+}
 
 export interface ConversationSource {
   observe(request: ConversationObservationRequest): Promise<ConversationObservationBatch>;
@@ -162,7 +183,10 @@ export function parseConversation(request: ConversationParseRequest): Conversati
       identity: observation.identity,
       kind: observation.kind,
       text: observation.text,
-      author: observation.author,
+      author: {
+        id: observation.author.id,
+        name: observation.author.name
+      },
       timestamp: observation.timestamp
     });
 
@@ -343,7 +367,7 @@ function isAttachmentSelection(value: unknown): value is AttachmentSelection {
     value.index >= 0 &&
     typeof value.mediaType === "string" &&
     value.mediaType.trim().length > 0 &&
-    typeof value.selection === "string"
+    isOpaqueAttachmentSelection(value.selection)
   );
 }
 
@@ -465,10 +489,11 @@ function isSupportedMediaPolicy(value: unknown): value is readonly string[] {
 function isConversationObservationBatch(value: unknown): value is ConversationObservationBatch {
   return (
     isRecord(value) &&
+    hasExactOwnDataKeys(value, ["destination", "coverage", "messages"], ["boundary"]) &&
     typeof value.destination === "string" &&
     (value.boundary === undefined || typeof value.boundary === "string") &&
     isCoverage(value.coverage) &&
-    Array.isArray(value.messages) &&
+    isPlainDenseArray(value.messages) &&
     value.messages.every(isConversationObservation)
   );
 }
@@ -478,24 +503,31 @@ function isCoverage(
 ): value is ConversationObservationBatch["coverage"] {
   return (
     isRecord(value) &&
-    ((value.kind === "contiguous-after-boundary" && hasOnlyKeys(value, ["kind"])) ||
+    ((value.kind === "contiguous-after-boundary" && hasExactOwnDataKeys(value, ["kind"])) ||
       (value.kind === "contiguous-visible-segment" &&
         typeof value.segmentStart === "string" &&
         value.segmentStart.length > 0 &&
-        hasOnlyKeys(value, ["kind", "segmentStart"])))
+        hasExactOwnDataKeys(value, ["kind", "segmentStart"])))
   );
 }
 
 function isConversationObservation(value: unknown): value is ConversationObservation {
   return (
     isRecord(value) &&
+    hasExactOwnDataKeys(value, [
+      "identity",
+      "kind",
+      "text",
+      "author",
+      "timestamp",
+      "attachments"
+    ]) &&
     typeof value.identity === "string" &&
     (value.kind === "ordinary-text" || value.kind === "system" || value.kind === "attachment-only") &&
     typeof value.text === "string" &&
     isConversationAuthor(value.author) &&
     isVisibleTimestamp(value.timestamp) &&
-    Array.isArray(value.attachments) &&
-    isDenseArray(value.attachments) &&
+    isPlainDenseArray(value.attachments) &&
     value.attachments.every(isConversationAttachmentObservation)
   );
 }
@@ -517,26 +549,29 @@ function isVisibleTimestamp(value: unknown): value is string {
 function isConversationAttachmentObservation(value: unknown): value is ConversationAttachmentObservation {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ["index", "mediaType", "selection"]) &&
+    hasExactOwnDataKeys(value, ["index", "mediaType", "selection"]) &&
     typeof value.index === "number" &&
     typeof value.mediaType === "string" &&
     value.mediaType.trim().length > 0 &&
-    typeof value.selection === "string"
+    isOpaqueAttachmentSelection(value.selection)
   );
 }
 
 function validateAttachmentIndexes(messages: readonly ConversationObservation[]): void {
+  const selections = new Set<string>();
   for (const message of messages) {
     let previousIndex = -1;
     for (const attachment of message.attachments) {
       if (
         !Number.isInteger(attachment.index) ||
         attachment.index < 0 ||
-        attachment.index <= previousIndex
+        attachment.index <= previousIndex ||
+        selections.has(attachment.selection)
       ) {
         throw new ConversationOrderError();
       }
       previousIndex = attachment.index;
+      selections.add(attachment.selection);
     }
   }
 }
@@ -552,11 +587,21 @@ function validateMessageIdentities(messages: readonly ConversationObservation[])
 }
 
 function isConversationAuthor(value: unknown): value is ConversationAuthor {
-  return isRecord(value) && typeof value.id === "string" && typeof value.name === "string";
+  return (
+    isRecord(value) &&
+    hasExactOwnDataKeys(value, ["id", "name"]) &&
+    typeof value.id === "string" &&
+    typeof value.name === "string"
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype
+  );
 }
 
 function hasCheckpoint(value: unknown): boolean {
@@ -589,6 +634,49 @@ function isOptionalStableIdentity(value: unknown): value is string | undefined {
 
 function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
   return Reflect.ownKeys(value).every((key) => typeof key === "string" && allowedKeys.includes(key));
+}
+
+function hasExactOwnDataKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = []
+): boolean {
+  const allowed = [...required, ...optional];
+  const keys = Reflect.ownKeys(value);
+  return (
+    required.every((key) => Object.hasOwn(value, key)) &&
+    keys.every(
+      (key) =>
+        typeof key === "string" &&
+        allowed.includes(key) &&
+        isEnumerableDataProperty(value, key)
+    )
+  );
+}
+
+function isEnumerableDataProperty(value: object, key: PropertyKey): boolean {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor !== undefined && "value" in descriptor && descriptor.enumerable === true;
+}
+
+function isPlainDenseArray(value: unknown): value is readonly unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    return false;
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== value.length + 1 || !keys.includes("length")) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index) || !isEnumerableDataProperty(value, String(index))) {
+      return false;
+    }
+  }
+  return keys.every(
+    (key) =>
+      typeof key === "string" &&
+      (key === "length" || (/^(?:0|[1-9]\d*)$/.test(key) && Number(key) < value.length))
+  );
 }
 
 function isDenseArray(value: readonly unknown[]): boolean {

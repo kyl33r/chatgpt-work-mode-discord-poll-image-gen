@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CONVERSATION_SOURCE_FAILURE_CATEGORIES } from "../src/constants.js";
 import type { DiscordChannelAllowlistStore } from "../src/config/discord-channel-allowlist.js";
-import { ConversationDestinationError } from "../src/conversation/discord-conversation-destination.js";
 import {
   executeConversationCommand,
   type ConversationCommandDependencies
@@ -19,13 +18,14 @@ import {
 import {
   ConversationBoundaryError,
   ConversationCheckpointError,
+  ConversationDestinationError,
   ConversationObservationError,
   ConversationOrderError,
   ConversationSourceError,
   type ConversationObservationRequest,
   type ConversationSnapshot
 } from "../src/conversation/conversation-parser.js";
-import { InMemoryWorkflowLock } from "../src/workflow-lock.js";
+import { InMemoryWorkflowLock, type WorkflowLock } from "../src/workflow-lock.js";
 
 const SERVER_ID = "123456789012345";
 const CHANNEL_ID = "234567890123456";
@@ -123,6 +123,116 @@ describe("executeConversationCommand", () => {
       messages: [{ text: "Private message one" }, { text: "Private message two" }],
       selectedAttachments: [{ selection: "opaque-selection:first" }]
     });
+  });
+
+  it("constructs a matching checkpoint internally and rejects an edited rescan prefix", async () => {
+    const handoff = recordingHandoff([]);
+    await executeConversationCommand(
+      "parse-conversation",
+      {
+        mode: "prepare",
+        invocationId: "invocation-001",
+        destination: CHANNEL_URL,
+        boundary: "discord-message:boundary",
+        stopAfterQualifyingMessages: 3
+      },
+      dependencies(handoff)
+    );
+    const firstObservation = {
+      destination: DESTINATION,
+      boundary: "discord-message:boundary",
+      coverage: { kind: "contiguous-after-boundary" },
+      messages: [message("first", "First"), message("second", "Second")]
+    };
+    await expect(
+      executeConversationCommand(
+        "parse-conversation",
+        { mode: "observe", invocationId: "invocation-001", observation: firstObservation },
+        dependencies(handoff)
+      )
+    ).resolves.toMatchObject({ action: "wait", acceptedMessageCount: 2 });
+
+    await expect(
+      executeConversationCommand(
+        "parse-conversation",
+        {
+          mode: "observe",
+          invocationId: "invocation-001",
+          observation: {
+            ...firstObservation,
+            messages: [message("first", "Edited First"), firstObservation.messages[1], message("third", "Third")]
+          }
+        },
+        dependencies(handoff)
+      )
+    ).resolves.toEqual({ action: "needs-attention" });
+    expect(handoff.snapshot?.messages.map((entry) => entry.text)).toEqual(["First", "Second"]);
+  });
+
+  it("rereads the current sole allowlist under lock and rejects a stale prepared destination", async () => {
+    const handoff = recordingHandoff([]);
+    handoff.request = {
+      destination: DESTINATION as never,
+      stopAfterQualifyingMessages: 1
+    };
+    let lockHeld = false;
+    let allowlistReadWhileLocked = false;
+    const workflowLock: WorkflowLock = {
+      async runExclusive(action) {
+        lockHeld = true;
+        try {
+          return await action();
+        } finally {
+          lockHeld = false;
+        }
+      }
+    };
+    const changedChannelUrl = `https://discord.com/channels/${SERVER_ID}/345678901234567`;
+
+    const result = await executeConversationCommand(
+      "parse-conversation",
+      { mode: "observe", invocationId: "invocation-001", observation: visibleObservation() },
+      {
+        handoff,
+        workflowLock,
+        allowlist: {
+          async getAll() {
+            allowlistReadWhileLocked = lockHeld;
+            return [changedChannelUrl];
+          },
+          replace: async () => undefined
+        }
+      }
+    );
+
+    expect(result).toEqual({ action: "needs-attention" });
+    expect(allowlistReadWhileLocked).toBe(true);
+    expect(handoff.snapshot).toBeUndefined();
+  });
+
+  it("rejects a stored request whose exact destination was tampered before observation", async () => {
+    const handoff = recordingHandoff([]);
+    const tamperedDestination = `discord:${SERVER_ID}:345678901234567`;
+    handoff.request = {
+      destination: tamperedDestination as never,
+      stopAfterQualifyingMessages: 1
+    };
+
+    const result = await executeConversationCommand(
+      "parse-conversation",
+      {
+        mode: "observe",
+        invocationId: "invocation-001",
+        observation: {
+          ...visibleObservation(),
+          destination: tamperedDestination
+        }
+      },
+      dependencies(handoff)
+    );
+
+    expect(result).toEqual({ action: "needs-attention" });
+    expect(handoff.snapshot).toBeUndefined();
   });
 
   it("rejects caller-selected output paths without writing a snapshot", async () => {
@@ -281,6 +391,20 @@ describe("parse-conversation executable", () => {
     expect(JSON.parse(result.stdout)).toEqual({ action: "needs-attention" });
     expect(result.stdout).not.toContain(privateReason);
   });
+
+  it("keeps malformed private round-adapter input out of stdout and stderr", async () => {
+    const workspace = await executableWorkspace();
+    const privateSelection = "private-selection-token";
+    const result = await runRawExecutable(
+      workspace,
+      "collect-conversation-snapshot",
+      `{"roundId":"R001","acquiredAttachments":[{"selection":"${privateSelection}"}`
+    );
+
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(JSON.parse(result.stdout)).toEqual({ action: "needs-attention" });
+    expect(result.stdout).not.toContain(privateSelection);
+  });
 });
 
 interface RecordingHandoff extends ConversationPrivateHandoff {
@@ -353,13 +477,17 @@ async function executableWorkspace(): Promise<string> {
 }
 
 async function runExecutable(workspace: string, payload: unknown) {
+  return runRawExecutable(workspace, "parse-conversation", JSON.stringify(payload));
+}
+
+async function runRawExecutable(workspace: string, command: string, payload: string) {
   const entrypoint = resolve("src/cli.ts");
   const tsx = resolve("node_modules/tsx/dist/cli.mjs");
-  const child = spawn(process.execPath, [tsx, entrypoint, "parse-conversation"], {
+  const child = spawn(process.execPath, [tsx, entrypoint, command], {
     cwd: workspace,
     stdio: ["pipe", "pipe", "pipe"]
   });
-  child.stdin.end(JSON.stringify(payload));
+  child.stdin.end(payload);
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk) => (stdout += chunk.toString()));

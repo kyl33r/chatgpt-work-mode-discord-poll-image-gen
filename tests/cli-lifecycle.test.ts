@@ -6,6 +6,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import sharp from "sharp";
 
 import { executeCommand as executeRoundCommand } from "../src/cli.js";
+import type { ConversationPrivateHandoff } from "../src/conversation/conversation-private-handoff.js";
+import type {
+  ConversationObservationRequest,
+  ConversationSnapshot
+} from "../src/conversation/conversation-parser.js";
 import {
   JsonRoundArtifactStore,
   type RoundArtifactStore
@@ -14,7 +19,9 @@ import { JsonRoundStateStore } from "../src/round/round-state-store.js";
 import { InMemoryWorkflowLock } from "../src/workflow-lock.js";
 
 const temporaryDirectories: string[] = [];
-const ALLOWED_CHANNEL = "https://discord.test/channels/allowlisted";
+const ALLOWED_CHANNEL =
+  "https://discord.com/channels/123456789012345/234567890123456";
+const DESTINATION = "discord:123456789012345:234567890123456";
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })));
@@ -44,7 +51,7 @@ describe("round CLI lifecycle", () => {
       )
     ).toMatchObject({
       action: "post-base-image",
-      operationId: "R100:submitting-base:1:469d047ee160"
+      operationId: "R100:submitting-base:1:7eeb78b32926"
     });
 
     await runCommand(
@@ -57,24 +64,25 @@ describe("round CLI lifecycle", () => {
       store
     );
 
+    const snapshot: ConversationSnapshot = {
+      destination: DESTINATION as ConversationSnapshot["destination"],
+      boundary: "https://discord.test/messages/base" as NonNullable<ConversationSnapshot["boundary"]>,
+      complete: true,
+      messages: Array.from({ length: 5 }, (_, index) => ({
+        identity: `discord-message:${index + 1}` as ConversationSnapshot["messages"][number]["identity"],
+        kind: "ordinary-text" as const,
+        text: `change ${index + 1}`,
+        author: { id: "same-author", name: "Same author" },
+        timestamp: `2026-08-24T10:0${index + 1}:00.000Z`
+      })),
+      selectedAttachments: []
+    };
     expect(
       await runCommand(
-        "collect-messages",
-        {
-          roundId: "R100",
-          boundaryMessageUrl: "https://discord.test/messages/base",
-          messages: Array.from({ length: 5 }, (_, index) => ({
-            kind: "ordinary-text",
-            roundId: "R100",
-            boundaryMessageUrl: "https://discord.test/messages/base",
-            messageUrl: `https://discord.test/messages/${index + 1}`,
-            authorId: "same-author",
-            authorName: "Same author",
-            timestamp: `2026-08-24T10:0${index + 1}:00.000Z`,
-            text: `change ${index + 1}`
-          }))
-        },
-        store
+        "collect-conversation-snapshot",
+        { roundId: "R100", invocationId: "invocation-001", acquiredAttachments: [] },
+        store,
+        { handoff: snapshotHandoff(snapshot) }
       )
     ).toMatchObject({
       action: "synthesize-feedback",
@@ -104,9 +112,9 @@ describe("round CLI lifecycle", () => {
       )
     ).toEqual({
       action: "post-collection-closed",
-      operationId: "R100:closing-collection:1:469d047ee160",
+      operationId: "R100:closing-collection:1:7eeb78b32926",
       roundId: "R100",
-      channelUrl: "https://discord.test/channels/allowlisted",
+      channelUrl: ALLOWED_CHANNEL,
       caption:
         "===== POLL CLOSED: R100 =====\nFinal image prompt:\n" + synthesizedPrompt
     });
@@ -140,7 +148,7 @@ describe("round CLI lifecycle", () => {
       })
     ).toMatchObject({
       action: "post-result-image",
-      operationId: "R100:publishing-outcome:1:469d047ee160",
+      operationId: "R100:publishing-outcome:1:7eeb78b32926",
       resultImagePath: stagedResultImagePath,
       caption: "===== RESULT: R100 ====="
     });
@@ -166,7 +174,7 @@ function runCommand(
   command: string,
   payload: unknown,
   store: JsonRoundStateStore,
-  options: { artifacts?: RoundArtifactStore } = {}
+  options: { artifacts?: RoundArtifactStore; handoff?: ConversationPrivateHandoff } = {}
 ) {
   return executeRoundCommand(command, payload, store, {
     allowlist: {
@@ -176,6 +184,19 @@ function runCommand(
     workflowLock: new InMemoryWorkflowLock(),
     ...options
   });
+}
+
+function snapshotHandoff(snapshot: ConversationSnapshot): ConversationPrivateHandoff {
+  return {
+    writeRequest: async () => undefined,
+    readRequest: async (): Promise<ConversationObservationRequest> => ({
+      destination: snapshot.destination,
+      ...(snapshot.boundary === undefined ? {} : { boundary: snapshot.boundary }),
+      stopAfterQualifyingMessages: 5
+    }),
+    writeSnapshot: async () => undefined,
+    readSnapshot: async () => snapshot
+  };
 }
 
 function validPng(): Promise<Buffer> {

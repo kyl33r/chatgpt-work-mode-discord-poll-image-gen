@@ -11,6 +11,12 @@ import {
   PARTICIPANT_REFERENCE_INSTRUCTION
 } from "../src/constants.js";
 import { executeCommand as executeRoundCommand } from "../src/cli.js";
+import type { DiscordChannelAllowlistStore } from "../src/config/discord-channel-allowlist.js";
+import type { ConversationPrivateHandoff } from "../src/conversation/conversation-private-handoff.js";
+import type {
+  ConversationObservationRequest,
+  ConversationSnapshot
+} from "../src/conversation/conversation-parser.js";
 import {
   JsonRoundArtifactStore,
   type RoundArtifactStore
@@ -38,6 +44,23 @@ describe("executeCommand", () => {
   it("uses the configured participant-image limits", () => {
     expect(FEEDBACK_IMAGE_LIMIT_PER_MESSAGE).toBe(2);
     expect(FEEDBACK_IMAGE_LIMIT_PER_ROUND).toBe(5);
+  });
+
+  it("rejects the legacy raw-message collection command", async () => {
+    const store = await createStore();
+    await store.save(collectingRound("R001"));
+
+    await expect(
+      runCommand(
+        "collect-messages",
+        {
+          roundId: "R001",
+          boundaryMessageUrl: "base-message",
+          messages: []
+        },
+        store
+      )
+    ).rejects.toThrow("Unknown command: collect-messages");
   });
 
   it("prepares one Base Image post with the configured marker and message limit", async () => {
@@ -327,88 +350,291 @@ describe("executeCommand", () => {
     ).resolves.toMatchObject({ action: "post-base-image", roundId: "R002" });
   });
 
-  it("waits for five messages, deduplicates rescans, then freezes and closes", async () => {
+  it("imports a completed private conversation snapshot into the active round", async () => {
+    const channelUrl =
+      "https://discord.com/channels/123456789012345/234567890123456";
+    const destination = "discord:123456789012345:234567890123456";
+    const allowlist: DiscordChannelAllowlistStore = {
+      getAll: async () => [channelUrl],
+      replace: async () => undefined
+    };
+    const store = await createStore();
+    await store.save({
+      ...collectingRound("R001"),
+      channelUrl,
+      baseMessageUrl: "discord-message:boundary"
+    });
+    const snapshot: ConversationSnapshot = {
+      destination: destination as ConversationSnapshot["destination"],
+      boundary: "discord-message:boundary" as NonNullable<ConversationSnapshot["boundary"]>,
+      complete: true,
+      messages: [1, 2, 3, 4, 5].map((index) => ({
+        identity: `discord-message:${index}` as ConversationSnapshot["messages"][number]["identity"],
+        kind: "ordinary-text" as const,
+        text: `parser message ${index}`,
+        author: { id: `author-${index}`, name: `Author ${index}` },
+        timestamp: `2026-08-24T10:0${index}:00.000Z`
+      })),
+      selectedAttachments: []
+    };
+
+    await expect(
+      runCommand(
+        "collect-conversation-snapshot",
+        {
+          roundId: "R001",
+          invocationId: "invocation-001",
+          acquiredAttachments: []
+        },
+        store,
+        {
+          allowlist: {
+            getAll: async () => [channelUrl],
+            replace: async () => undefined
+          },
+          handoff: snapshotHandoff(snapshot)
+        }
+      )
+    ).resolves.toEqual({ action: "synthesize-feedback", roundId: "R001" });
+
+    await expect(store.get("R001")).resolves.toMatchObject({
+      phase: "synthesizing-feedback",
+      capturedMessages: [1, 2, 3, 4, 5].map((index) => ({
+        messageUrl: `discord-message:${index}`,
+        authorId: `author-${index}`,
+        authorName: `Author ${index}`,
+        text: `parser message ${index}`,
+        contextImages: []
+      }))
+    });
+  });
+
+  it("maps acquired parser selections to their qualifying messages", async () => {
+    const channelUrl =
+      "https://discord.com/channels/123456789012345/234567890123456";
+    const destination = "discord:123456789012345:234567890123456";
+    const store = await createStore();
+    const roundsRoot = join(temporaryDirectories.at(-1)!, "rounds");
+    const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
+    await mkdir(feedbackRoot, { recursive: true });
+    const imagePath = join(feedbackRoot, "message-1-attachment-0.png");
+    await writeFile(imagePath, await validPng());
+    await store.save({
+      ...collectingRound("R001"),
+      channelUrl,
+      baseMessageUrl: "discord-message:boundary"
+    });
+    const snapshot: ConversationSnapshot = {
+      destination: destination as ConversationSnapshot["destination"],
+      boundary: "discord-message:boundary" as NonNullable<ConversationSnapshot["boundary"]>,
+      complete: true,
+      messages: [1, 2, 3, 4, 5].map((index) => ({
+        identity: `discord-message:${index}` as ConversationSnapshot["messages"][number]["identity"],
+        kind: "ordinary-text" as const,
+        text: `parser message ${index}`,
+        author: { id: `author-${index}`, name: `Author ${index}` },
+        timestamp: `2026-08-24T10:0${index}:00.000Z`
+      })),
+      selectedAttachments: [
+        {
+          owner: "discord-message:1" as ConversationSnapshot["messages"][number]["identity"],
+          index: 0,
+          mediaType: "image/png",
+          selection: "selection:1:0" as ConversationSnapshot["selectedAttachments"][number]["selection"]
+        }
+      ]
+    };
+
+    await expect(
+      runCommand(
+        "collect-conversation-snapshot",
+        {
+          roundId: "R001",
+          invocationId: "invocation-001",
+          acquiredAttachments: [{ selection: "selection:1:0", imagePath }]
+        },
+        store,
+        {
+          artifacts: new JsonRoundArtifactStore(roundsRoot),
+          allowlist: {
+            getAll: async () => [channelUrl],
+            replace: async () => undefined
+          },
+          handoff: snapshotHandoff(snapshot)
+        }
+      )
+    ).resolves.toEqual({ action: "synthesize-feedback", roundId: "R001" });
+
+    const persisted = await store.get("R001");
+    expect(persisted?.capturedMessages[0]).toMatchObject({
+      messageUrl: "discord-message:1",
+      contextImages: [{ attachmentIndex: 0, imagePath: await realpath(imagePath) }]
+    });
+  });
+
+  it("rejects an incomplete parser snapshot instead of partially mutating the round", async () => {
+    const channelUrl =
+      "https://discord.com/channels/123456789012345/234567890123456";
+    const destination = "discord:123456789012345:234567890123456";
+    const store = await createStore();
+    await store.save({
+      ...collectingRound("R001"),
+      channelUrl,
+      baseMessageUrl: "discord-message:boundary"
+    });
+    const snapshot: ConversationSnapshot = {
+      destination: destination as ConversationSnapshot["destination"],
+      boundary: "discord-message:boundary" as NonNullable<ConversationSnapshot["boundary"]>,
+      complete: false,
+      messages: [],
+      selectedAttachments: []
+    };
+
+    await expect(
+      runCommand(
+        "collect-conversation-snapshot",
+        { roundId: "R001", invocationId: "invocation-001", acquiredAttachments: [] },
+        store,
+        {
+          allowlist: {
+            getAll: async () => [channelUrl],
+            replace: async () => undefined
+          },
+          handoff: snapshotHandoff(snapshot)
+        }
+      )
+    ).resolves.toMatchObject({ action: "needs-attention", roundId: "R001" });
+    await expect(store.get("R001")).resolves.toMatchObject({
+      phase: "needs-attention",
+      capturedMessages: []
+    });
+  });
+
+  it("rejects extra private adapter payload fields before reading the handoff", async () => {
     const store = await createStore();
     await store.save(collectingRound("R001"));
-    const firstFour = [1, 2, 3, 4].map(observation);
+    let readCount = 0;
+    const handoff: ConversationPrivateHandoff = {
+      writeRequest: async () => undefined,
+      readRequest: async () => {
+        readCount += 1;
+        return undefined;
+      },
+      writeSnapshot: async () => undefined,
+      readSnapshot: async () => {
+        readCount += 1;
+        return undefined;
+      }
+    };
 
-    expect(
-      await runCommand(
-        "collect-messages",
+    await expect(
+      runCommand(
+        "collect-conversation-snapshot",
         {
           roundId: "R001",
-          boundaryMessageUrl: "base-message",
-          messages: firstFour
+          invocationId: "invocation-001",
+          acquiredAttachments: [],
+          privateExtra: "must-not-be-accepted"
         },
-        store
+        store,
+        { handoff }
       )
-    ).toEqual({
-      action: "wait",
-      roundId: "R001",
-      capturedCount: 4,
-      remainingCount: 1,
-      scanIntervalMs: 15_000
-    });
+    ).rejects.toThrow("payload is invalid.");
+    expect(readCount).toBe(0);
+  });
 
-    expect(
-      await runCommand(
-        "collect-messages",
+  it("preserves parser provider order when visible timestamps are equal", async () => {
+    const channelUrl =
+      "https://discord.com/channels/123456789012345/234567890123456";
+    const destination = "discord:123456789012345:234567890123456";
+    const store = await createStore();
+    await store.save({
+      ...collectingRound("R001"),
+      channelUrl,
+      baseMessageUrl: "discord-message:boundary"
+    });
+    const snapshot: ConversationSnapshot = {
+      destination: destination as ConversationSnapshot["destination"],
+      boundary: "discord-message:boundary" as NonNullable<ConversationSnapshot["boundary"]>,
+      complete: true,
+      messages: [1, 2, 3, 4, 5].map((index) => ({
+        identity: `discord-message:${index}` as ConversationSnapshot["messages"][number]["identity"],
+        kind: "ordinary-text" as const,
+        text: `provider-order ${index}`,
+        author: { id: "same-author", name: "Same Author" },
+        timestamp: "2026-08-24T10:01:00.000Z"
+      })),
+      selectedAttachments: []
+    };
+
+    await expect(
+      runCommand(
+        "collect-conversation-snapshot",
+        { roundId: "R001", invocationId: "invocation-001", acquiredAttachments: [] },
+        store,
         {
-          roundId: "R001",
-          boundaryMessageUrl: "base-message",
-          messages: [...firstFour, observation(5), observation(6)]
-        },
-        store
+          allowlist: {
+            getAll: async () => [channelUrl],
+            replace: async () => undefined
+          },
+          handoff: snapshotHandoff(snapshot)
+        }
       )
-    ).toEqual({
-      action: "synthesize-feedback",
-      roundId: "R001"
-    });
+    ).resolves.toEqual({ action: "synthesize-feedback", roundId: "R001" });
+    expect((await store.get("R001"))?.capturedMessages.map((message) => message.text)).toEqual(
+      [1, 2, 3, 4, 5].map((index) => `provider-order ${index}`)
+    );
+  });
 
-    expect(await store.get("R001")).toMatchObject({
-      phase: "synthesizing-feedback",
-      capturedMessages: [1, 2, 3, 4, 5].map(captured)
+  it("persists needs-attention when parser boundary authority mismatches the round", async () => {
+    const channelUrl =
+      "https://discord.com/channels/123456789012345/234567890123456";
+    const destination = "discord:123456789012345:234567890123456";
+    const store = await createStore();
+    await store.save({
+      ...collectingRound("R001"),
+      channelUrl,
+      baseMessageUrl: "discord-message:boundary"
     });
+    const snapshot: ConversationSnapshot = {
+      destination: destination as ConversationSnapshot["destination"],
+      boundary: "discord-message:other" as NonNullable<ConversationSnapshot["boundary"]>,
+      complete: true,
+      messages: [],
+      selectedAttachments: []
+    };
 
-    expect(await runCommand("prepare-prompt-synthesis", { roundId: "R001" }, store)).toEqual({
-      action: "synthesize-prompt",
-      roundId: "R001",
-      feedbackTexts: [1, 2, 3, 4, 5].map((index) => `random message ${index}`),
-      contextImagePaths: []
-    });
-
-    expect(
-      await runCommand(
-        "confirm-synthesized-prompt",
-        { roundId: "R001", synthesizedPrompt: SYNTHESIZED_PROMPT },
-        store
+    await expect(
+      runCommand(
+        "collect-conversation-snapshot",
+        { roundId: "R001", invocationId: "invocation-001", acquiredAttachments: [] },
+        store,
+        {
+          allowlist: {
+            getAll: async () => [channelUrl],
+            replace: async () => undefined
+          },
+          handoff: snapshotHandoff(snapshot)
+        }
       )
-    ).toEqual({
-      action: "post-collection-closed",
-      operationId: "R001:closing-collection:1:469d047ee160",
-      roundId: "R001",
-      channelUrl: "https://discord.test/channels/allowlisted",
-      caption: `===== POLL CLOSED: R001 =====\nFinal image prompt:\n${SYNTHESIZED_PROMPT}`
-    });
-
-    expect(await store.get("R001")).toMatchObject({
-      phase: "closing-collection",
-      capturedMessages: [1, 2, 3, 4, 5].map(captured),
-      synthesizedPrompt: SYNTHESIZED_PROMPT
-    });
-
-    expect(
-      await runCommand(
-        "confirm-collection-closed",
-        { roundId: "R001", closedMessageUrl: "closed-message" },
-        store
-      )
-    ).toEqual({ action: "recorded", roundId: "R001", phase: "ready-to-generate" });
+    ).resolves.toMatchObject({ action: "needs-attention", roundId: "R001" });
+    await expect(store.get("R001")).resolves.toMatchObject({ phase: "needs-attention" });
   });
 
   it("validates and preserves participant image order through generation", async () => {
+    const channelUrl =
+      "https://discord.com/channels/123456789012345/234567890123456";
+    const destination = "discord:123456789012345:234567890123456";
+    const allowlist: DiscordChannelAllowlistStore = {
+      getAll: async () => [channelUrl],
+      replace: async () => undefined
+    };
     const store = await createStore();
-    await store.save(collectingRound("R001"));
+    await store.save({
+      ...collectingRound("R001"),
+      channelUrl,
+      baseMessageUrl: "discord-message:boundary"
+    });
     const roundsRoot = join(temporaryDirectories.at(-1)!, "rounds");
     const feedbackRoot = join(roundsRoot, "R001", "feedback-images");
     await mkdir(feedbackRoot, { recursive: true });
@@ -417,17 +643,50 @@ describe("executeCommand", () => {
     await writeFile(first, await validPng());
     await writeFile(second, await validPng());
     const artifacts = new JsonRoundArtifactStore(roundsRoot);
-    const messages = [1, 2, 3, 4, 5].map(observation);
-    messages[0]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png", imagePath: first }];
-    messages[1]!.attachments = [{ attachmentIndex: 0, mediaType: "image/png", imagePath: second }];
-
+    const snapshot: ConversationSnapshot = {
+      destination: destination as ConversationSnapshot["destination"],
+      boundary: "discord-message:boundary" as NonNullable<ConversationSnapshot["boundary"]>,
+      complete: true,
+      messages: [1, 2, 3, 4, 5].map((index) => ({
+        identity: `discord-message:${index}` as ConversationSnapshot["messages"][number]["identity"],
+        kind: "ordinary-text" as const,
+        text: `random message ${index}`,
+        author: { id: `author-${index}`, name: `Author ${index}` },
+        timestamp: `2026-08-24T10:0${index}:00.000Z`
+      })),
+      selectedAttachments: [
+        {
+          owner: "discord-message:1" as ConversationSnapshot["messages"][number]["identity"],
+          index: 0,
+          mediaType: "image/png",
+          selection: "selection:1" as ConversationSnapshot["selectedAttachments"][number]["selection"]
+        },
+        {
+          owner: "discord-message:2" as ConversationSnapshot["messages"][number]["identity"],
+          index: 0,
+          mediaType: "image/png",
+          selection: "selection:2" as ConversationSnapshot["selectedAttachments"][number]["selection"]
+        }
+      ]
+    };
     await runCommand(
-      "collect-messages",
-      { roundId: "R001", boundaryMessageUrl: "base-message", messages },
+      "collect-conversation-snapshot",
+      {
+        roundId: "R001",
+        invocationId: "invocation-001",
+        acquiredAttachments: [
+          { selection: "selection:1", imagePath: first },
+          { selection: "selection:2", imagePath: second }
+        ]
+      },
       store,
-      { artifacts }
+      {
+        artifacts,
+        allowlist,
+        handoff: snapshotHandoff(snapshot)
+      }
     );
-    expect(await runCommand("prepare-prompt-synthesis", { roundId: "R001" }, store)).toMatchObject({
+    expect(await runCommand("prepare-prompt-synthesis", { roundId: "R001" }, store, { allowlist })).toMatchObject({
       contextImagePaths: [await realpath(first), await realpath(second)]
     });
     const prompt =
@@ -435,42 +694,18 @@ describe("executeCommand", () => {
       `${PARTICIPANT_REFERENCE_INSTRUCTION}\n` +
       "Apply all requested changes coherently.\n" +
       "Preserve unrelated content. Produce exactly one edited image.";
-    await runCommand("confirm-synthesized-prompt", { roundId: "R001", synthesizedPrompt: prompt }, store);
+    await runCommand("confirm-synthesized-prompt", { roundId: "R001", synthesizedPrompt: prompt }, store, { allowlist });
     await runCommand(
       "confirm-collection-closed",
       { roundId: "R001", closedMessageUrl: "closed-message" },
-      store
+      store,
+      { allowlist }
     );
     await expect(
-      runCommand("prepare-generation", { roundId: "R001" }, store, { artifacts })
+      runCommand("prepare-generation", { roundId: "R001" }, store, { artifacts, allowlist })
     ).resolves.toMatchObject({
       contextImagePaths: [await realpath(first), await realpath(second)],
       instruction: prompt
-    });
-  });
-
-  it("persists needs-attention when a scan has ambiguous message order", async () => {
-    const store = await createStore();
-    await store.save(collectingRound("R001"));
-
-    expect(
-      await runCommand(
-        "collect-messages",
-        {
-          roundId: "R001",
-          boundaryMessageUrl: "base-message",
-          messages: [observation(2), observation(1)]
-        },
-        store
-      )
-    ).toEqual({
-      action: "needs-attention",
-      roundId: "R001",
-      reason: "Discord message order is ambiguous; reconcile the round manually."
-    });
-    expect(await store.get("R001")).toMatchObject({
-      phase: "needs-attention",
-      attentionReason: "Discord message order is ambiguous; reconcile the round manually."
     });
   });
 
@@ -752,16 +987,34 @@ function runCommand(
   command: string,
   payload: unknown,
   store: RoundStateStore,
-  options: { artifacts?: RoundArtifactStore } = {}
+  options: {
+    artifacts?: RoundArtifactStore;
+    allowlist?: DiscordChannelAllowlistStore;
+    handoff?: ConversationPrivateHandoff;
+  } = {}
 ) {
   return executeRoundCommand(command, payload, store, {
-    allowlist: {
+    allowlist: options.allowlist ?? {
       getAll: async () => [ALLOWED_CHANNEL],
       replace: async () => undefined
     },
     workflowLock: new InMemoryWorkflowLock(),
-    ...options
+    ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+    ...(options.handoff === undefined ? {} : { handoff: options.handoff })
   });
+}
+
+function snapshotHandoff(snapshot: ConversationSnapshot): ConversationPrivateHandoff {
+  return {
+    writeRequest: async () => undefined,
+    readRequest: async (): Promise<ConversationObservationRequest | undefined> => ({
+      destination: snapshot.destination,
+      ...(snapshot.boundary === undefined ? {} : { boundary: snapshot.boundary }),
+      stopAfterQualifyingMessages: 5
+    }),
+    writeSnapshot: async () => undefined,
+    readSnapshot: async () => snapshot
+  };
 }
 
 function validPng(red = 0): Promise<Buffer> {
