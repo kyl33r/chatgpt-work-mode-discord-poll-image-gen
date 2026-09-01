@@ -32,7 +32,7 @@ describe("OpenClaw runtime guard", () => {
     ).toThrow("The isolated OpenClaw Gateway port is too close to another local listener.");
     expect(() =>
       assertOpenClawGatewayPortIsolation(21789, [21789])
-    ).not.toThrow();
+    ).toThrow("The isolated OpenClaw Gateway port is already occupied.");
   });
 
   it("extracts listener ports without retaining process details", () => {

@@ -33,6 +33,13 @@ export interface InboundAttachmentStore {
   ): Promise<string>;
 }
 
+export class InvalidInboundImageError extends Error {
+  public constructor() {
+    super("Inbound Base Image is missing, unsupported, or ambiguously staged.");
+    this.name = "InvalidInboundImageError";
+  }
+}
+
 export class JsonInboundAttachmentStore implements InboundAttachmentStore {
   public constructor(private readonly roundsRoot: string) {}
 
@@ -199,6 +206,6 @@ async function isDecodableImage(
   }
 }
 
-function invalidInboundImage(): Error {
-  return new Error("Inbound Base Image is missing, unsupported, or ambiguously staged.");
+function invalidInboundImage(): InvalidInboundImageError {
+  return new InvalidInboundImageError();
 }

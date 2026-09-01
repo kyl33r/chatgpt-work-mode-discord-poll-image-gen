@@ -7,6 +7,7 @@ import {
   OPENCLAW_GATEWAY_TOKEN_ENV,
   OPENCLAW_PLUGIN_DIRECTORY,
   OPENCLAW_PLUGIN_ID,
+  OPENCLAW_PROFILE_CLEARED_ROOTS,
   OPENCLAW_PREPARE_SYNTHESIS_TOOL_NAME,
   OPENCLAW_PROVIDER_PLUGIN_ID,
   OPENCLAW_RUNTIME_ROOT,
@@ -22,6 +23,7 @@ export interface OpenClawProfilePatchInput {
 
 export function buildOpenClawProfileReplacementPaths(): readonly string[] {
   return [
+    "agents",
     "browser",
     "channels",
     "commands",
@@ -42,6 +44,7 @@ export function buildOpenClawProfilePatch(
   requireDiscordSnowflake(input.channelId);
   const root = resolve(input.projectRoot);
   return {
+    ...Object.fromEntries(OPENCLAW_PROFILE_CLEARED_ROOTS.map((path) => [path, null])),
     agents: {
       defaults: {
         workspace: join(

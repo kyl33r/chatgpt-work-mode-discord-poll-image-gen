@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { FeedbackRoundCoordinator } from "../src/messaging/feedback-round-coordinator.js";
-import type { InboundAttachmentStore } from "../src/messaging/inbound-attachment-store.js";
+import {
+  FeedbackRoundCoordinator,
+  UnsupportedBaseImageError
+} from "../src/messaging/feedback-round-coordinator.js";
+import {
+  InvalidInboundImageError,
+  type InboundAttachmentStore
+} from "../src/messaging/inbound-attachment-store.js";
 import type { GeneratedResultStore } from "../src/generation/generated-result-store.js";
 import type { ImageGenerator } from "../src/generation/image-generator.js";
 import type { DiscordChannelAllowlistStore } from "../src/config/discord-channel-allowlist.js";
@@ -236,13 +242,177 @@ describe("FeedbackRoundCoordinator", () => {
       workflowLock: new InMemoryWorkflowLock()
     });
 
-    await coordinator.handleInboundAmbiguity("discord", "channel-1");
+    await coordinator.handleInboundAmbiguity("discord", "channel-1", {
+      category: "media",
+      hasQualifyingText: true,
+      potentialSupportedImageCount: 1,
+      stagedUsableSupportedImageCount: 0
+    });
 
     expect(await store.get("ROUND1")).toMatchObject({
       phase: "needs-attention",
       attentionReason:
         "Inbound Discord attachment staging is incomplete or ambiguous; reconcile the round manually."
     });
+  });
+
+  it("ignores ambiguity that cannot affect collection selection", async () => {
+    const store = new MemoryRoundStore();
+    const channelUrl = "https://discord.com/channels/guild-1/channel-1";
+    let collecting = applyRoundEvent(
+      applyRoundEvent(
+        createRound({
+          id: "ROUND1",
+          baseImagePath: "/state/ROUND1/base-image.png",
+          channelUrl,
+          messageLimit: 5
+        }),
+        { type: "base-submission-started" }
+      ),
+      {
+        type: "base-submission-confirmed",
+        baseMessageUrl: `${channelUrl}/boundary`,
+        collectionStartedAt: "2026-09-01T08:00:00.000Z"
+      }
+    );
+    await store.save(collecting);
+    const coordinator = new FeedbackRoundCoordinator({
+      allowlist: allowlist(channelUrl),
+      artifacts: passthroughArtifacts(),
+      inboundAttachments: importedAttachments(),
+      generatedResults: generatedResults(),
+      store,
+      workflowLock: new InMemoryWorkflowLock()
+    });
+
+    await coordinator.handleInboundAmbiguity("discord", "channel-1", {
+      category: "media",
+      hasQualifyingText: false,
+      potentialSupportedImageCount: 1,
+      stagedUsableSupportedImageCount: 0
+    });
+    expect(await store.get("ROUND1")).toMatchObject({ phase: "collecting-messages" });
+
+    collecting = applyRoundEvent(collecting, {
+      type: "message-collection-progressed",
+      capturedMessages: [
+        {
+          messageUrl: `${channelUrl}/message-1`,
+          authorId: "participant-1",
+          authorName: "Participant",
+          timestamp: "2026-09-01T08:01:00.000Z",
+          text: "five references already selected",
+          contextImages: Array.from({ length: 5 }, (_, index) => ({
+            attachmentIndex: index,
+            mediaType: "image/png",
+            imagePath: `/state/ROUND1/reference-${index}.png`
+          }))
+        }
+      ]
+    });
+    await store.save(collecting);
+    await coordinator.handleInboundAmbiguity("discord", "channel-1", {
+      category: "media",
+      hasQualifyingText: true,
+      potentialSupportedImageCount: 1,
+      stagedUsableSupportedImageCount: 0
+    });
+    expect(await store.get("ROUND1")).toMatchObject({ phase: "collecting-messages" });
+
+    const synthesizing = applyRoundEvent(collecting, {
+      type: "message-collection-filled",
+      capturedMessages: Array.from({ length: 5 }, (_, index) => ({
+        messageUrl: `${channelUrl}/message-${index + 1}`,
+        authorId: `participant-${index + 1}`,
+        authorName: "Participant",
+        timestamp: `2026-09-01T08:0${index + 1}:00.000Z`,
+        text: `change ${index + 1}`,
+        contextImages: []
+      }))
+    });
+    await store.save(synthesizing);
+    await coordinator.handleInboundAmbiguity("discord", "channel-1", {
+      category: "identity",
+      hasQualifyingText: true,
+      potentialSupportedImageCount: 0,
+      stagedUsableSupportedImageCount: 0
+    });
+    expect(await store.get("ROUND1")).toMatchObject({ phase: "synthesizing-feedback" });
+  });
+
+  it("quarantines every conflicting active round", async () => {
+    const store = new MemoryRoundStore();
+    const channelUrl = "https://discord.com/channels/guild-1/channel-1";
+    const collecting = applyRoundEvent(
+      applyRoundEvent(
+        createRound({
+          id: "ROUND1",
+          baseImagePath: "/state/ROUND1/base-image.png",
+          channelUrl,
+          messageLimit: 5
+        }),
+        { type: "base-submission-started" }
+      ),
+      {
+        type: "base-submission-confirmed",
+        baseMessageUrl: `${channelUrl}/boundary`,
+        collectionStartedAt: "2026-09-01T08:00:00.000Z"
+      }
+    );
+    await store.save(collecting);
+    await store.save({
+      ...collecting,
+      id: "ROUND2",
+      baseImagePath: "/state/ROUND2/base-image.png"
+    });
+    const coordinator = new FeedbackRoundCoordinator({
+      allowlist: allowlist(channelUrl),
+      artifacts: passthroughArtifacts(),
+      inboundAttachments: importedAttachments(),
+      generatedResults: generatedResults(),
+      store,
+      workflowLock: new InMemoryWorkflowLock()
+    });
+
+    await coordinator.handleInboundAmbiguity("discord", "channel-1", {
+      category: "identity",
+      hasQualifyingText: true,
+      potentialSupportedImageCount: 0,
+      stagedUsableSupportedImageCount: 0
+    });
+
+    expect(await store.get("ROUND1")).toMatchObject({ phase: "needs-attention" });
+    expect(await store.get("ROUND2")).toMatchObject({ phase: "needs-attention" });
+  });
+
+  it("maps invalid staged Base Image bytes to the controlled refusal error", async () => {
+    const coordinator = new FeedbackRoundCoordinator({
+      allowlist: allowlist("https://discord.com/channels/guild-1/channel-1"),
+      artifacts: passthroughArtifacts(),
+      inboundAttachments: {
+        async importBaseImage() {
+          throw new InvalidInboundImageError();
+        },
+        async importFeedbackImage() {
+          throw new Error("not used");
+        }
+      },
+      generatedResults: generatedResults(),
+      store: new MemoryRoundStore(),
+      workflowLock: new InMemoryWorkflowLock()
+    });
+
+    await expect(
+      coordinator.executeAction({
+        action: { type: "start-feedback-round" },
+        source: {
+          ...roundSource(),
+          attachments: [
+            { index: 0, path: "/staging/corrupt.png", mediaType: "image/png" }
+          ]
+        }
+      })
+    ).rejects.toBeInstanceOf(UnsupportedBaseImageError);
   });
 
   it("confirms a submitted Base Image from the exact Discord delivery receipt", async () => {

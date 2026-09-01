@@ -7,9 +7,11 @@ export function assertOpenClawGatewayPortIsolation(
   candidatePort: number,
   occupiedPorts: readonly number[]
 ): void {
+  if (occupiedPorts.includes(candidatePort)) {
+    throw new Error("The isolated OpenClaw Gateway port is already occupied.");
+  }
   const tooClose = occupiedPorts.some(
     (port) =>
-      port !== candidatePort &&
       Math.abs(port - candidatePort) < OPENCLAW_GATEWAY_MINIMUM_PORT_SEPARATION
   );
   if (tooClose) {

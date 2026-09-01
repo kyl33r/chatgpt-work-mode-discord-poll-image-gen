@@ -88,7 +88,13 @@ describe("OpenClawRoundBridge", () => {
 
     expect(coordinator.handleInboundAmbiguity).toHaveBeenCalledWith(
       "discord",
-      "channel-1"
+      "channel-1",
+      {
+        category: "media",
+        hasQualifyingText: true,
+        potentialSupportedImageCount: 1,
+        stagedUsableSupportedImageCount: 0
+      }
     );
   });
 

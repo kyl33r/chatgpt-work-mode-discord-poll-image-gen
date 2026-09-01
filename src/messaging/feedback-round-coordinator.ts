@@ -4,11 +4,15 @@ import { executeCommand, type CommandDependencies } from "../cli.js";
 import { resolveDiscordChannel } from "../config/resolve-discord-channel.js";
 import {
   DISCORD_SNOWFLAKE_EPOCH_MS,
+  FEEDBACK_IMAGE_LIMIT_PER_MESSAGE,
+  FEEDBACK_IMAGE_LIMIT_PER_ROUND,
   OPENCLAW_DELIVERY_AMBIGUOUS_ATTENTION_REASON,
   OPENCLAW_DELIVERY_FAILED_ATTENTION_REASON,
   OPENCLAW_GENERATION_AMBIGUOUS_ATTENTION_REASON,
   OPENCLAW_INBOUND_AMBIGUITY_ATTENTION_REASON,
+  OPENCLAW_INBOUND_IDENTITY_AMBIGUITY_ATTENTION_REASON,
   OPENCLAW_ROUND_ID_PREFIX,
+  OPENCLAW_STATE_AMBIGUITY_ATTENTION_REASON,
   OPENCLAW_PARTICIPANT_DISPLAY_NAME,
   SUPPORTED_IMAGE_MIME_TYPES
 } from "../constants.js";
@@ -17,9 +21,14 @@ import type { RoundStateStore } from "../round/round-state-store.js";
 import type { WorkflowLock } from "../workflow-lock.js";
 import type { DiscordChannelAllowlistStore } from "../config/discord-channel-allowlist.js";
 import type { InboundMessage } from "./messaging.js";
-import type { InboundAttachmentStore } from "./inbound-attachment-store.js";
+import {
+  InvalidInboundImageError,
+  type InboundAttachmentStore
+} from "./inbound-attachment-store.js";
 import type { ImageGenerator } from "../generation/image-generator.js";
 import type { GeneratedResultStore } from "../generation/generated-result-store.js";
+import { applyRoundEvent } from "../round/round-state.js";
+import type { InboundAmbiguityEvidence } from "./openclaw-message-normalizer.js";
 
 export interface StartFeedbackRoundAction {
   type: "start-feedback-round";
@@ -143,16 +152,24 @@ export class FeedbackRoundCoordinator {
       workflowLock: this.dependencies.workflowLock,
       authorizedChannelUrl
     };
-    const prepared = await executeCommand(
-      "prepare-inbound-base-submission",
-      {
-        roundId,
-        stagedPath: baseImage.path,
-        mediaType: baseImage.mediaType
-      },
-      this.dependencies.store,
-      commandDependencies
-    );
+    let prepared;
+    try {
+      prepared = await executeCommand(
+        "prepare-inbound-base-submission",
+        {
+          roundId,
+          stagedPath: baseImage.path,
+          mediaType: baseImage.mediaType
+        },
+        this.dependencies.store,
+        commandDependencies
+      );
+    } catch (error) {
+      if (error instanceof InvalidInboundImageError) {
+        throw new UnsupportedBaseImageError();
+      }
+      throw error;
+    }
     return requirePreparedRoundStart(prepared, roundId);
   }
 
@@ -228,7 +245,8 @@ export class FeedbackRoundCoordinator {
 
   public async handleInboundAmbiguity(
     provider: string | undefined,
-    conversationId: string | undefined
+    conversationId: string | undefined,
+    evidence: InboundAmbiguityEvidence
   ): Promise<void> {
     if (!(await this.isConfiguredConversation(provider, conversationId))) {
       return;
@@ -236,26 +254,66 @@ export class FeedbackRoundCoordinator {
     const authorizedChannelUrl = await resolveDiscordChannel(
       this.dependencies.allowlist
     );
-    const active = (await this.dependencies.store.list()).filter(
-      (round) =>
-        round.channelUrl === authorizedChannelUrl &&
-        !isTerminalPhase(round.phase)
-    );
-    if (active.length === 0) {
-      return;
-    }
-    if (active.length !== 1 || !active[0]) {
-      throw new Error("Feedback Round state is incomplete or ambiguous.");
-    }
-    await executeCommand(
-      "mark-attention",
-      {
-        roundId: active[0].id,
-        reason: OPENCLAW_INBOUND_AMBIGUITY_ATTENTION_REASON
-      },
-      this.dependencies.store,
-      this.commandDependencies(authorizedChannelUrl)
-    );
+    await this.dependencies.workflowLock.runExclusive(async () => {
+      const active = (await this.dependencies.store.list()).filter(
+        (round) =>
+          round.channelUrl === authorizedChannelUrl &&
+          !isTerminalPhase(round.phase)
+      );
+      if (active.length === 0) {
+        return;
+      }
+      if (active.length > 1) {
+        const results = await Promise.allSettled(
+          active.map((round) =>
+            this.dependencies.store.save(
+              applyRoundEvent(round, {
+                type: "attention-required",
+                reason: OPENCLAW_STATE_AMBIGUITY_ATTENTION_REASON
+              })
+            )
+          )
+        );
+        if (results.some((result) => result.status === "rejected")) {
+          throw new Error("Conflicting Feedback Round state could not be quarantined.");
+        }
+        return;
+      }
+      const round = active[0];
+      if (!round || round.phase !== "collecting-messages" || !evidence.hasQualifyingText) {
+        return;
+      }
+      if (evidence.category === "media") {
+        const acceptedImageCount = round.capturedMessages.reduce(
+          (count, message) => count + message.contextImages.length,
+          0
+        );
+        const remainingRoundCapacity = Math.max(
+          0,
+          FEEDBACK_IMAGE_LIMIT_PER_ROUND - acceptedImageCount
+        );
+        const selectableImageCount = Math.min(
+          FEEDBACK_IMAGE_LIMIT_PER_MESSAGE,
+          remainingRoundCapacity,
+          evidence.potentialSupportedImageCount
+        );
+        if (
+          selectableImageCount === 0 ||
+          evidence.stagedUsableSupportedImageCount >= selectableImageCount
+        ) {
+          return;
+        }
+      }
+      await this.dependencies.store.save(
+        applyRoundEvent(round, {
+          type: "attention-required",
+          reason:
+            evidence.category === "media"
+              ? OPENCLAW_INBOUND_AMBIGUITY_ATTENTION_REASON
+              : OPENCLAW_INBOUND_IDENTITY_AMBIGUITY_ATTENTION_REASON
+        })
+      );
+    });
   }
 
   public async confirmRoundStart(input: ConfirmRoundStartInput): Promise<void> {

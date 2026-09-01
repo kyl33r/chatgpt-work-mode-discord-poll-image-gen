@@ -62,11 +62,12 @@ npm run openclaw:profile -- validate
 `prepare` derives the server and channel only from the private project
 allowlist. It writes the OpenClaw configuration to the named profile outside
 the repository. The private Discord identifiers are not command arguments and
-are not printed. It atomically replaces every capability-bearing channel,
-tool, plugin, browser, command, message, and Gateway section, so stale values
-from an earlier run cannot survive. It also refuses setup when another local
-TCP listener is less than 20 ports away from this profile's Gateway port; the
-current profile's own port is exempt so preparation remains repeatable.
+are not printed. It atomically replaces every capability-bearing agent,
+channel, tool, plugin, browser, command, message, Gateway, scheduler, ingress,
+skill, and MCP section, so stale values from an earlier run cannot survive. It
+also refuses setup when the selected Gateway port is occupied or any other
+local TCP listener is less than 20 ports away. Stop this profile before running
+`prepare` again, then repeat the authentication step.
 
 ## 3. Seed the Discord credential locally
 

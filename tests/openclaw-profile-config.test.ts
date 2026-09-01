@@ -80,6 +80,7 @@ describe("OpenClaw isolated profile config", () => {
 
   it("removes stale capability-bearing sections before applying the profile", () => {
     expect(buildOpenClawProfileReplacementPaths()).toEqual([
+      "agents",
       "browser",
       "channels",
       "commands",
@@ -88,5 +89,35 @@ describe("OpenClaw isolated profile config", () => {
       "plugins",
       "tools"
     ]);
+    expect(patchWithoutPrivateValues()).toMatchObject({
+      acp: null,
+      approvals: null,
+      bindings: null,
+      broadcast: null,
+      cloudWorkers: null,
+      cron: null,
+      desktop: null,
+      discovery: null,
+      env: null,
+      hooks: null,
+      mcp: null,
+      memory: null,
+      models: null,
+      nodeHost: null,
+      proxy: null,
+      skills: null,
+      surfaces: null,
+      talk: null,
+      transcripts: null,
+      tts: null
+    });
   });
 });
+
+function patchWithoutPrivateValues() {
+  return buildOpenClawProfilePatch({
+    projectRoot: "/project",
+    guildId: "111111111111111111",
+    channelId: "222222222222222222"
+  });
+}

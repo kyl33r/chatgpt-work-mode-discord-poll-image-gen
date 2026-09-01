@@ -16,6 +16,29 @@ export const OPENCLAW_VERSION = "2026.8.1";
 export const OPENCLAW_PROFILE_NAME = "image-feedback-poc";
 export const OPENCLAW_GATEWAY_PORT = 21_789;
 export const OPENCLAW_GATEWAY_MINIMUM_PORT_SEPARATION = 20;
+export const OPENCLAW_LSOF_PATH = "/usr/sbin/lsof";
+export const OPENCLAW_PROFILE_CLEARED_ROOTS = [
+  "acp",
+  "approvals",
+  "bindings",
+  "broadcast",
+  "cloudWorkers",
+  "cron",
+  "desktop",
+  "discovery",
+  "env",
+  "hooks",
+  "mcp",
+  "memory",
+  "models",
+  "nodeHost",
+  "proxy",
+  "skills",
+  "surfaces",
+  "talk",
+  "transcripts",
+  "tts"
+] as const;
 export const OPENCLAW_GATEWAY_TOKEN_ENV = "OPENCLAW_GATEWAY_TOKEN";
 export const OPENCLAW_DISCORD_TOKEN_ENV = "DISCORD_BOT_TOKEN";
 export const OPENCLAW_PROVIDER_PLUGIN_ID = "openai";
@@ -53,6 +76,10 @@ export const OPENCLAW_GENERATION_AMBIGUOUS_ATTENTION_REASON =
   "Image generation did not produce an unambiguous outcome; reconcile the round manually.";
 export const OPENCLAW_INBOUND_AMBIGUITY_ATTENTION_REASON =
   "Inbound Discord attachment staging is incomplete or ambiguous; reconcile the round manually.";
+export const OPENCLAW_INBOUND_IDENTITY_AMBIGUITY_ATTENTION_REASON =
+  "Inbound Discord message identity is incomplete or ambiguous; reconcile the round manually.";
+export const OPENCLAW_STATE_AMBIGUITY_ATTENTION_REASON =
+  "Multiple active Feedback Rounds conflict in this channel; reconcile them manually.";
 export const FEEDBACK_MESSAGE_LIMIT = 5;
 export const FEEDBACK_IMAGE_LIMIT_PER_MESSAGE = 2;
 export const FEEDBACK_IMAGE_LIMIT_PER_ROUND = 5;

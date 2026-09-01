@@ -73,7 +73,10 @@ describe("normalizeOpenClawMessage", () => {
           senderId: "participant-1"
         }
       )
-    ).toThrow(InboundMessageAmbiguityError);
+    ).toThrow(expect.objectContaining({
+      name: "InboundMessageAmbiguityError",
+      category: "media"
+    }));
   });
 
   it("fails closed when original media exists without staged media", () => {

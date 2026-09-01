@@ -10,6 +10,7 @@ import {
   OPENCLAW_DISCORD_TOKEN_ENV,
   OPENCLAW_GATEWAY_PORT,
   OPENCLAW_GATEWAY_TOKEN_ENV,
+  OPENCLAW_LSOF_PATH,
   OPENCLAW_PROFILE_NAME,
   OPENCLAW_RUNTIME_ROOT,
   OPENCLAW_VERSION,
@@ -110,7 +111,7 @@ async function main(): Promise<void> {
 
 async function prepareProfile(nodeBinary: string): Promise<void> {
   const listenerOutput = await spawnCaptured(
-    "/usr/sbin/lsof",
+    OPENCLAW_LSOF_PATH,
     ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fn"],
     undefined,
     [0, 1]

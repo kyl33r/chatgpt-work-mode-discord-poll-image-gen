@@ -20,6 +20,8 @@ import type { InboundMessage } from "../messaging/messaging.js";
 import type { ImageGenerator } from "../generation/image-generator.js";
 import {
   normalizeOpenClawMessage,
+  describeInboundAmbiguity,
+  type InboundAmbiguityEvidence,
   type OpenClawMessageContext,
   type OpenClawMessageEvent
 } from "../messaging/openclaw-message-normalizer.js";
@@ -29,7 +31,8 @@ export interface OpenClawRoundCoordinatorPort {
   handleMessage(source: InboundMessage): Promise<InboundRoundDirective>;
   handleInboundAmbiguity(
     provider: string | undefined,
-    conversationId: string | undefined
+    conversationId: string | undefined,
+    evidence: InboundAmbiguityEvidence
   ): Promise<void>;
   isConfiguredConversation(
     provider: string | undefined,
@@ -407,9 +410,13 @@ export class OpenClawRoundBridge {
         directive: await this.coordinator.handleMessage(source),
         source
       };
-    } catch {
+    } catch (error) {
       await this.coordinator
-        .handleInboundAmbiguity(context.channelId, context.conversationId)
+        .handleInboundAmbiguity(
+          context.channelId,
+          context.conversationId,
+          describeInboundAmbiguity(event, error)
+        )
         .catch(() => undefined);
       return { type: "ambiguous" };
     }

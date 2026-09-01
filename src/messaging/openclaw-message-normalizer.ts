@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 
+import { SUPPORTED_IMAGE_MIME_TYPES } from "../constants.js";
 import type { InboundMessage } from "./messaging.js";
 
 export interface OpenClawMediaFact {
@@ -29,23 +30,63 @@ export interface OpenClawMessageContext {
 }
 
 export class InboundMessageAmbiguityError extends Error {
-  public constructor() {
+  public constructor(public readonly category: "identity" | "media") {
     super("Inbound messaging state is incomplete or ambiguous.");
     this.name = "InboundMessageAmbiguityError";
   }
+}
+
+export interface InboundAmbiguityEvidence {
+  category: "identity" | "media";
+  hasQualifyingText: boolean;
+  potentialSupportedImageCount: number;
+  stagedUsableSupportedImageCount: number;
+}
+
+export function describeInboundAmbiguity(
+  event: OpenClawMessageEvent,
+  error: unknown
+): InboundAmbiguityEvidence {
+  const potentialMedia = event.originalMedia ?? event.media ?? [];
+  const seenPaths = new Set<string>();
+  const stagedUsableSupportedImageCount = (event.media ?? []).filter((media) => {
+    if (
+      typeof media.path !== "string" ||
+      !isAbsolute(media.path) ||
+      !isSupportedMediaType(media.contentType) ||
+      (media.messageId !== undefined && media.messageId !== event.messageId) ||
+      seenPaths.has(media.path)
+    ) {
+      return false;
+    }
+    seenPaths.add(media.path);
+    return true;
+  }).length;
+  return {
+    category:
+      error instanceof InboundMessageAmbiguityError ? error.category : "identity",
+    hasQualifyingText: event.content.trim().length > 0,
+    potentialSupportedImageCount: potentialMedia.filter(
+      (media) =>
+        media.contentType === undefined || isSupportedMediaType(media.contentType)
+    ).length,
+    stagedUsableSupportedImageCount
+  };
 }
 
 export function normalizeOpenClawMessage(
   event: OpenClawMessageEvent,
   context: OpenClawMessageContext
 ): InboundMessage {
+  if (context.channelId !== "discord") {
+    throw ambiguity("identity");
+  }
   if (
-    context.channelId !== "discord" ||
     event.mediaStagingPending === true ||
     ((event.originalMedia?.length ?? 0) > 0 &&
       event.originalMedia?.length !== (event.media?.length ?? 0))
   ) {
-    throw ambiguity();
+    throw ambiguity("media");
   }
 
   const guildId = requireOpaqueId(event.metadata?.guildId);
@@ -68,7 +109,7 @@ export function normalizeOpenClawMessage(
       (media.messageId !== undefined && media.messageId !== messageId) ||
       seenPaths.has(media.path)
     ) {
-      throw ambiguity();
+      throw ambiguity("media");
     }
     seenPaths.add(media.path);
     return {
@@ -116,6 +157,13 @@ function requireTimestamp(value: unknown): string {
   return timestamp.toISOString();
 }
 
-function ambiguity(): InboundMessageAmbiguityError {
-  return new InboundMessageAmbiguityError();
+function ambiguity(category: "identity" | "media" = "identity"): InboundMessageAmbiguityError {
+  return new InboundMessageAmbiguityError(category);
+}
+
+function isSupportedMediaType(value: string | undefined): boolean {
+  return (
+    typeof value === "string" &&
+    SUPPORTED_IMAGE_MIME_TYPES.some((candidate) => candidate === value)
+  );
 }

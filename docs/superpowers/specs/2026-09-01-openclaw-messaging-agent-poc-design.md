@@ -274,9 +274,9 @@ persist Needs Attention.
 
 Profile preparation atomically replaces every capability-bearing configuration
 section from any earlier version of the named profile with the complete bounded
-configuration. It refuses to prepare when another local listener is fewer than
-20 ports from the selected Gateway port, while allowing the same profile to be
-prepared again when its own exact port is already active.
+configuration. It refuses to prepare when the selected Gateway port is occupied
+or another local listener is fewer than 20 ports away. The operator must stop
+the named profile before preparing it again and then repeat authentication.
 
 The plugin may retry transport connection establishment according to
 OpenClaw's Gateway behavior. It may not retry a possibly completed Discord
