@@ -207,6 +207,44 @@ describe("FeedbackRoundCoordinator", () => {
     });
   });
 
+  it("persists Needs Attention when inbound media is ambiguous during collection", async () => {
+    const store = new MemoryRoundStore();
+    const channelUrl = "https://discord.com/channels/guild-1/channel-1";
+    const collecting = applyRoundEvent(
+      applyRoundEvent(
+        createRound({
+          id: "ROUND1",
+          baseImagePath: "/state/ROUND1/base-image.png",
+          channelUrl,
+          messageLimit: 5
+        }),
+        { type: "base-submission-started" }
+      ),
+      {
+        type: "base-submission-confirmed",
+        baseMessageUrl: `${channelUrl}/boundary`,
+        collectionStartedAt: "2026-09-01T08:00:00.000Z"
+      }
+    );
+    await store.save(collecting);
+    const coordinator = new FeedbackRoundCoordinator({
+      allowlist: allowlist(channelUrl),
+      artifacts: passthroughArtifacts(),
+      inboundAttachments: importedAttachments(),
+      generatedResults: generatedResults(),
+      store,
+      workflowLock: new InMemoryWorkflowLock()
+    });
+
+    await coordinator.handleInboundAmbiguity("discord", "channel-1");
+
+    expect(await store.get("ROUND1")).toMatchObject({
+      phase: "needs-attention",
+      attentionReason:
+        "Inbound Discord attachment staging is incomplete or ambiguous; reconcile the round manually."
+    });
+  });
+
   it("confirms a submitted Base Image from the exact Discord delivery receipt", async () => {
     const store = new MemoryRoundStore();
     const channelUrl = "https://discord.com/channels/guild-1/channel-1";
@@ -292,9 +330,11 @@ describe("FeedbackRoundCoordinator", () => {
         mediaType: "image/png"
       })
     };
+    const artifacts = passthroughArtifacts();
+    const acceptedBase = vi.spyOn(artifacts, "acceptBaseImage");
     const coordinator = new FeedbackRoundCoordinator({
       allowlist: allowlist(channelUrl),
-      artifacts: passthroughArtifacts(),
+      artifacts,
       inboundAttachments: importedAttachments(),
       generatedResults: generatedResults(),
       store,
@@ -343,6 +383,10 @@ describe("FeedbackRoundCoordinator", () => {
     });
 
     expect(generator.generate).toHaveBeenCalledTimes(1);
+    expect(acceptedBase).toHaveBeenCalledWith(
+      "ROUND1",
+      "/state/ROUND1/base-image.png"
+    );
     expect(generator.generate).toHaveBeenCalledWith({
       prompt,
       baseImagePath: "/state/ROUND1/base-image.png",
@@ -362,7 +406,101 @@ describe("FeedbackRoundCoordinator", () => {
     });
     expect(await store.get("ROUND1")).toMatchObject({ phase: "completed" });
   });
+
+  it("persists Needs Attention when generated output cannot be staged", async () => {
+    const store = new MemoryRoundStore();
+    const channelUrl = "https://discord.com/channels/guild-1/channel-1";
+    await store.save(readyToGenerateRound(channelUrl));
+    const coordinator = new FeedbackRoundCoordinator({
+      allowlist: allowlist(channelUrl),
+      artifacts: passthroughArtifacts(),
+      inboundAttachments: importedAttachments(),
+      generatedResults: {
+        async stage() {
+          throw new Error("simulated staging failure");
+        }
+      },
+      store,
+      workflowLock: new InMemoryWorkflowLock()
+    });
+
+    await expect(
+      coordinator.generateAndPreparePublication({
+        roundId: "ROUND1",
+        source: roundSource(),
+        generator: {
+          async generate() {
+            return {
+              kind: "succeeded",
+              bytes: Buffer.from("generated-image"),
+              mediaType: "image/png"
+            };
+          }
+        }
+      })
+    ).rejects.toThrow("Image generation did not produce an unambiguous outcome.");
+    expect(await store.get("ROUND1")).toMatchObject({
+      phase: "needs-attention"
+    });
+  });
 });
+
+function readyToGenerateRound(channelUrl: string): RoundState {
+  let round = applyRoundEvent(
+    applyRoundEvent(
+      createRound({
+        id: "ROUND1",
+        baseImagePath: "/state/ROUND1/base-image.png",
+        channelUrl,
+        messageLimit: 5
+      }),
+      { type: "base-submission-started" }
+    ),
+    {
+      type: "base-submission-confirmed",
+      baseMessageUrl: `${channelUrl}/1751862888969322496`,
+      collectionStartedAt: "2026-09-01T08:00:00.000Z"
+    }
+  );
+  round = applyRoundEvent(round, {
+    type: "message-collection-filled",
+    capturedMessages: Array.from({ length: 5 }, (_, index) => ({
+      messageUrl: `${channelUrl}/message-${index + 1}`,
+      authorId: `participant-${index + 1}`,
+      authorName: "Participant",
+      timestamp: `2026-09-01T08:0${index + 1}:00.000Z`,
+      text: `change ${index + 1}`,
+      contextImages: []
+    }))
+  });
+  round = applyRoundEvent(round, {
+    type: "synthesized-prompt-confirmed",
+    synthesizedPrompt:
+      "Edit the supplied base image using this synthesized participant feedback:\n" +
+      "Apply all five requested visual changes as one coherent edit.\n" +
+      "Preserve unrelated content. Produce exactly one edited image."
+  });
+  return applyRoundEvent(round, {
+    type: "collection-closed",
+    closedMessageUrl: `${channelUrl}/1751862888969322497`
+  });
+}
+
+function roundSource() {
+  return {
+    provider: "discord" as const,
+    destination: {
+      kind: "discord-channel" as const,
+      guildId: "guild-1",
+      channelId: "channel-1"
+    },
+    messageId: "message-5",
+    senderId: "participant-5",
+    occurredAt: "2026-09-01T08:05:00.000Z",
+    text: "change 5",
+    attachments: []
+  };
+}
 
 class MemoryRoundStore implements RoundStateStore {
   private readonly rounds = new Map<string, RoundState>();

@@ -42,7 +42,8 @@ export function normalizeOpenClawMessage(
   if (
     context.channelId !== "discord" ||
     event.mediaStagingPending === true ||
-    ((event.originalMedia?.length ?? 0) > 0 && (event.media?.length ?? 0) === 0)
+    ((event.originalMedia?.length ?? 0) > 0 &&
+      event.originalMedia?.length !== (event.media?.length ?? 0))
   ) {
     throw ambiguity();
   }

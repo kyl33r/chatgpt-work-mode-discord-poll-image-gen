@@ -12,12 +12,18 @@ import {
   OPENCLAW_GATEWAY_TOKEN_ENV,
   OPENCLAW_PROFILE_NAME,
   OPENCLAW_RUNTIME_ROOT,
-  OPENCLAW_VERSION
+  OPENCLAW_VERSION,
+  OPENCLAW_WORKSPACE_DIRECTORY
 } from "../src/constants.js";
 import { JsonDiscordChannelAllowlistStore } from "../src/config/discord-channel-allowlist.js";
-import { buildOpenClawProfilePatch } from "../src/openclaw/openclaw-profile-config.js";
 import {
+  buildOpenClawProfilePatch,
+  buildOpenClawProfileReplacementPaths
+} from "../src/openclaw/openclaw-profile-config.js";
+import {
+  assertOpenClawGatewayPortIsolation,
   isSupportedOpenClawNodeVersion,
+  parseListeningTcpPorts,
   requirePinnedOpenClawVersion
 } from "../src/openclaw/openclaw-runtime.js";
 
@@ -103,6 +109,16 @@ async function main(): Promise<void> {
 }
 
 async function prepareProfile(nodeBinary: string): Promise<void> {
+  const listenerOutput = await spawnCaptured(
+    "/usr/sbin/lsof",
+    ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fn"],
+    undefined,
+    [0, 1]
+  );
+  assertOpenClawGatewayPortIsolation(
+    OPENCLAW_GATEWAY_PORT,
+    parseListeningTcpPorts(listenerOutput)
+  );
   const configured = await new JsonDiscordChannelAllowlistStore(
     join(PROJECT_ROOT, DISCORD_CHANNEL_ALLOWLIST_PATH)
   ).getAll();
@@ -116,16 +132,27 @@ async function prepareProfile(nodeBinary: string): Promise<void> {
   if (!guildId || guildId === "@me" || !channelId) {
     throw new Error("The OpenClaw POC requires one configured Discord server channel.");
   }
-  await mkdir(join(PROJECT_ROOT, OPENCLAW_RUNTIME_ROOT, "workspace"), {
+  await mkdir(
+    join(PROJECT_ROOT, OPENCLAW_RUNTIME_ROOT, OPENCLAW_WORKSPACE_DIRECTORY),
+    {
     recursive: true,
     mode: 0o700
-  });
+    }
+  );
   const patch = buildOpenClawProfilePatch({
     projectRoot: PROJECT_ROOT,
     guildId,
     channelId
   });
-  await runOpenClaw(nodeBinary, ["config", "patch", "--stdin"], {
+  const replacementArgs = buildOpenClawProfileReplacementPaths().flatMap(
+    (path) => ["--replace-path", path]
+  );
+  await runOpenClaw(nodeBinary, [
+    "config",
+    "patch",
+    "--stdin",
+    ...replacementArgs
+  ], {
     input: `${JSON.stringify(patch)}\n`
   });
   await runOpenClaw(nodeBinary, ["config", "validate"]);
@@ -243,7 +270,8 @@ async function runOpenClaw(
 async function spawnCaptured(
   executable: string,
   args: string[],
-  input?: string
+  input?: string,
+  acceptedExitCodes: readonly number[] = [0]
 ): Promise<string> {
   return new Promise<string>((resolvePromise, reject) => {
     const child = spawn(executable, args, {
@@ -255,7 +283,7 @@ async function spawnCaptured(
     child.stderr.resume();
     child.once("error", reject);
     child.once("exit", (code) => {
-      if (code === 0) {
+      if (code !== null && acceptedExitCodes.includes(code)) {
         resolvePromise(Buffer.concat(output).toString("utf8"));
       } else {
         reject(new Error("The isolated OpenClaw command did not complete."));

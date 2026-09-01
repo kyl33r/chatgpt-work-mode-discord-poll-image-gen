@@ -1,4 +1,38 @@
-import { OPENCLAW_VERSION } from "../constants.js";
+import {
+  OPENCLAW_GATEWAY_MINIMUM_PORT_SEPARATION,
+  OPENCLAW_VERSION
+} from "../constants.js";
+
+export function assertOpenClawGatewayPortIsolation(
+  candidatePort: number,
+  occupiedPorts: readonly number[]
+): void {
+  const tooClose = occupiedPorts.some(
+    (port) =>
+      port !== candidatePort &&
+      Math.abs(port - candidatePort) < OPENCLAW_GATEWAY_MINIMUM_PORT_SEPARATION
+  );
+  if (tooClose) {
+    throw new Error(
+      "The isolated OpenClaw Gateway port is too close to another local listener."
+    );
+  }
+}
+
+export function parseListeningTcpPorts(output: string): number[] {
+  const ports = new Set<number>();
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^n.*:(\d+)$/.exec(line);
+    if (!match) {
+      continue;
+    }
+    const port = Number(match[1]);
+    if (Number.isInteger(port) && port > 0 && port <= 65_535) {
+      ports.add(port);
+    }
+  }
+  return [...ports].sort((left, right) => left - right);
+}
 
 export function isSupportedOpenClawNodeVersion(version: string): boolean {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version);

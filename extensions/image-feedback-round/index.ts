@@ -9,8 +9,7 @@ import {
 import { createOpenClawRoundBridge } from "../../src/openclaw/create-openclaw-round-bridge.js";
 import { OpenClawImageGenerator } from "../../src/openclaw/openclaw-image-generator.js";
 import {
-  registerOpenClawRoundAdapter,
-  type OpenClawAdapterApi
+  registerOpenClawRoundAdapter
 } from "../../src/openclaw/openclaw-plugin-adapter.js";
 
 export default definePluginEntry({
@@ -26,7 +25,7 @@ export default definePluginEntry({
       OPENCLAW_PLUGIN_PROJECT_ROOT_RELATIVE_PATH
     );
     registerOpenClawRoundAdapter(
-      api as unknown as OpenClawAdapterApi,
+      api,
       createOpenClawRoundBridge(projectRoot),
       (context) =>
         new OpenClawImageGenerator({

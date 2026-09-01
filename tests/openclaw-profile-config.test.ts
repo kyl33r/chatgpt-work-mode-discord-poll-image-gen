@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildOpenClawProfilePatch } from "../src/openclaw/openclaw-profile-config.js";
+import {
+  buildOpenClawProfilePatch,
+  buildOpenClawProfileReplacementPaths
+} from "../src/openclaw/openclaw-profile-config.js";
 
 describe("OpenClaw isolated profile config", () => {
   it("allows one Discord channel and only the bounded workflow tool", () => {
@@ -73,5 +76,17 @@ describe("OpenClaw isolated profile config", () => {
       messages: { groupChat: { visibleReplies: "message_tool" } },
       commands: { native: false }
     });
+  });
+
+  it("removes stale capability-bearing sections before applying the profile", () => {
+    expect(buildOpenClawProfileReplacementPaths()).toEqual([
+      "browser",
+      "channels",
+      "commands",
+      "gateway",
+      "messages",
+      "plugins",
+      "tools"
+    ]);
   });
 });

@@ -143,7 +143,11 @@ Every returned action is untrusted until `executeAction` validates it.
 
 The existing `ImageGenerator` seam remains authoritative. It receives the
 persisted Synthesized Prompt and validated artifact references exactly once.
-OpenClaw never calls the provider directly.
+The OpenClaw adapter keeps the Base Image as the first independent input and
+composes all accepted Participant Reference Images into one deterministic,
+row-major contact sheet. This preserves the configured five-image round limit
+within the pinned provider's five-total-input limit without silently dropping
+context. OpenClaw never calls the provider outside this adapter.
 
 ## Message flows
 
@@ -267,6 +271,12 @@ Disallowed destinations are ignored without revealing allowlist information.
 Unsupported Base Images return a controlled refusal. Attachment-staging
 uncertainty, state disagreement, generation ambiguity, and delivery ambiguity
 persist Needs Attention.
+
+Profile preparation atomically replaces every capability-bearing configuration
+section from any earlier version of the named profile with the complete bounded
+configuration. It refuses to prepare when another local listener is fewer than
+20 ports from the selected Gateway port, while allowing the same profile to be
+prepared again when its own exact port is already active.
 
 The plugin may retry transport connection establishment according to
 OpenClaw's Gateway behavior. It may not retry a possibly completed Discord

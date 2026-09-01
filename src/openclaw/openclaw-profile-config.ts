@@ -20,6 +20,18 @@ export interface OpenClawProfilePatchInput {
   channelId: string;
 }
 
+export function buildOpenClawProfileReplacementPaths(): readonly string[] {
+  return [
+    "browser",
+    "channels",
+    "commands",
+    "gateway",
+    "messages",
+    "plugins",
+    "tools"
+  ];
+}
+
 export function buildOpenClawProfilePatch(
   input: OpenClawProfilePatchInput
 ): Record<string, unknown> {

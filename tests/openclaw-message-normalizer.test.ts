@@ -97,4 +97,36 @@ describe("normalizeOpenClawMessage", () => {
       )
     ).toThrow(InboundMessageAmbiguityError);
   });
+
+  it("fails closed when only part of the original media was staged", () => {
+    expect(() =>
+      normalizeOpenClawMessage(
+        {
+          from: "participant",
+          content: "Use both references",
+          timestamp: Date.parse("2026-09-01T08:00:00.000Z"),
+          messageId: "message-1",
+          senderId: "participant-1",
+          originalMedia: [
+            { contentType: "image/png", kind: "image" },
+            { contentType: "image/png", kind: "image" }
+          ],
+          media: [
+            {
+              path: "/private/staging/reference-1.png",
+              contentType: "image/png",
+              messageId: "message-1"
+            }
+          ],
+          metadata: { guildId: "guild-1" }
+        },
+        {
+          channelId: "discord",
+          conversationId: "channel-1",
+          messageId: "message-1",
+          senderId: "participant-1"
+        }
+      )
+    ).toThrow(InboundMessageAmbiguityError);
+  });
 });

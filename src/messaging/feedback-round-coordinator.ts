@@ -7,6 +7,7 @@ import {
   OPENCLAW_DELIVERY_AMBIGUOUS_ATTENTION_REASON,
   OPENCLAW_DELIVERY_FAILED_ATTENTION_REASON,
   OPENCLAW_GENERATION_AMBIGUOUS_ATTENTION_REASON,
+  OPENCLAW_INBOUND_AMBIGUITY_ATTENTION_REASON,
   OPENCLAW_ROUND_ID_PREFIX,
   OPENCLAW_PARTICIPANT_DISPLAY_NAME,
   SUPPORTED_IMAGE_MIME_TYPES
@@ -25,6 +26,13 @@ export interface StartFeedbackRoundAction {
 }
 
 export type RequestedRoundAction = StartFeedbackRoundAction;
+
+export class UnsupportedBaseImageError extends Error {
+  public constructor() {
+    super("Start the round with exactly one supported Base Image.");
+    this.name = "UnsupportedBaseImageError";
+  }
+}
 
 export interface GovernedActionRequest {
   action: RequestedRoundAction;
@@ -218,6 +226,38 @@ export class FeedbackRoundCoordinator {
     return new URL(channelUrl).pathname.split("/").filter(Boolean)[2] === conversationId;
   }
 
+  public async handleInboundAmbiguity(
+    provider: string | undefined,
+    conversationId: string | undefined
+  ): Promise<void> {
+    if (!(await this.isConfiguredConversation(provider, conversationId))) {
+      return;
+    }
+    const authorizedChannelUrl = await resolveDiscordChannel(
+      this.dependencies.allowlist
+    );
+    const active = (await this.dependencies.store.list()).filter(
+      (round) =>
+        round.channelUrl === authorizedChannelUrl &&
+        !isTerminalPhase(round.phase)
+    );
+    if (active.length === 0) {
+      return;
+    }
+    if (active.length !== 1 || !active[0]) {
+      throw new Error("Feedback Round state is incomplete or ambiguous.");
+    }
+    await executeCommand(
+      "mark-attention",
+      {
+        roundId: active[0].id,
+        reason: OPENCLAW_INBOUND_AMBIGUITY_ATTENTION_REASON
+      },
+      this.dependencies.store,
+      this.commandDependencies(authorizedChannelUrl)
+    );
+  }
+
   public async confirmRoundStart(input: ConfirmRoundStartInput): Promise<void> {
     const authorizedChannelUrl = await this.requireAuthorizedSource(input.source);
     if (createRoundId(input.source) !== input.roundId) {
@@ -328,13 +368,43 @@ export class FeedbackRoundCoordinator {
       dependencies
     );
     const generation = requireGenerationDirective(prepared, input.roundId);
-    let result;
     try {
-      result = await input.generator.generate({
+      const baseImagePath = await this.dependencies.artifacts.acceptBaseImage(
+        input.roundId,
+        generation.baseImagePath
+      );
+      const result = await input.generator.generate({
         prompt: generation.prompt,
-        baseImagePath: generation.baseImagePath,
+        baseImagePath,
         contextImagePaths: generation.contextImagePaths
       });
+      if (result.kind === "succeeded") {
+        const resultImagePath = await this.dependencies.generatedResults.stage(
+          input.roundId,
+          result.bytes,
+          result.mediaType
+        );
+        await executeCommand(
+          "confirm-generation",
+          { roundId: input.roundId, outcome: "succeeded", resultImagePath },
+          this.dependencies.store,
+          dependencies
+        );
+      } else {
+        await executeCommand(
+          "confirm-generation",
+          { roundId: input.roundId, outcome: result.kind },
+          this.dependencies.store,
+          dependencies
+        );
+      }
+      const publication = await executeCommand(
+        "prepare-publication",
+        { roundId: input.roundId },
+        this.dependencies.store,
+        dependencies
+      );
+      return requirePublicationDirective(publication, input.roundId);
     } catch {
       await executeCommand(
         "mark-attention",
@@ -347,33 +417,6 @@ export class FeedbackRoundCoordinator {
       );
       throw new Error("Image generation did not produce an unambiguous outcome.");
     }
-    if (result.kind === "succeeded") {
-      const resultImagePath = await this.dependencies.generatedResults.stage(
-        input.roundId,
-        result.bytes,
-        result.mediaType
-      );
-      await executeCommand(
-        "confirm-generation",
-        { roundId: input.roundId, outcome: "succeeded", resultImagePath },
-        this.dependencies.store,
-        dependencies
-      );
-    } else {
-      await executeCommand(
-        "confirm-generation",
-        { roundId: input.roundId, outcome: result.kind },
-        this.dependencies.store,
-        dependencies
-      );
-    }
-    const publication = await executeCommand(
-      "prepare-publication",
-      { roundId: input.roundId },
-      this.dependencies.store,
-      dependencies
-    );
-    return requirePublicationDirective(publication, input.roundId);
   }
 
   public async confirmPublication(input: ConfirmRoundDeliveryInput): Promise<void> {
@@ -541,7 +584,7 @@ function requireSingleBaseImage(source: InboundMessage) {
       (mediaType) => mediaType === source.attachments[0]?.mediaType
     )
   ) {
-    throw new Error("Start the round with exactly one supported Base Image.");
+    throw new UnsupportedBaseImageError();
   }
   return source.attachments[0] as InboundMessage["attachments"][number];
 }

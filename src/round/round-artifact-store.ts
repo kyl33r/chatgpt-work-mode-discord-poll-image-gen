@@ -40,7 +40,7 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
   public constructor(private readonly roundsRoot: string) {}
 
   public acceptBaseImage(roundId: string, candidatePath: string): Promise<string> {
-    return this.requireCapsuleImage(
+    return this.requireValidBaseImage(
       roundId,
       candidatePath,
       "Base image must be staged under the durable state directory."
@@ -211,6 +211,33 @@ export class JsonRoundArtifactStore implements RoundArtifactStore {
       throw new Error(errorMessage);
     }
     if (!(await isDecodableImageOfExpectedFormat(resolvedPath))) {
+      throw new Error(errorMessage);
+    }
+    return resolvedPath;
+  }
+
+  private async requireValidBaseImage(
+    roundId: string,
+    candidatePath: string,
+    errorMessage: string
+  ): Promise<string> {
+    const resolvedPath = await this.requireCapsuleImage(
+      roundId,
+      candidatePath,
+      errorMessage
+    );
+    const resolvedCapsule = await realpath(
+      roundCapsuleDirectory(this.roundsRoot, roundId)
+    );
+    const pathFromCapsule = relative(resolvedCapsule, resolvedPath);
+    const expectedName = `${ROUND_BASE_IMAGE_BASENAME}${extname(
+      resolvedPath
+    ).toLowerCase()}`;
+    if (
+      dirname(pathFromCapsule) !== "." ||
+      basename(pathFromCapsule) !== expectedName ||
+      !(await isDecodableImageOfExpectedFormat(resolvedPath))
+    ) {
       throw new Error(errorMessage);
     }
     return resolvedPath;

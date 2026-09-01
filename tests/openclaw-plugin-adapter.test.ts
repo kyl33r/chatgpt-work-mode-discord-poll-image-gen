@@ -8,19 +8,20 @@ import {
 } from "../src/openclaw/openclaw-plugin-adapter.js";
 import type { ImageGenerator } from "../src/generation/image-generator.js";
 import type { OpenClawRoundBridge } from "../src/openclaw/openclaw-round-bridge.js";
+import { UnsupportedBaseImageError } from "../src/messaging/feedback-round-coordinator.js";
 
 describe("OpenClaw plugin adapter", () => {
   it("registers only the three lifecycle hooks and three bounded optional tools", async () => {
     const hooks = new Map<string, (...args: unknown[]) => unknown>();
     const toolFactories: Array<(context: unknown) => unknown> = [];
-    const api: OpenClawAdapterApi = {
-      on(name, handler) {
+    const api = {
+      on(name: string, handler: (...args: never[]) => unknown) {
         hooks.set(name, handler as (...args: unknown[]) => unknown);
       },
-      registerTool(factory) {
+      registerTool(factory: unknown) {
         toolFactories.push(factory as (context: unknown) => unknown);
       }
-    };
+    } as unknown as OpenClawAdapterApi;
     const generator = { generate: vi.fn() } as ImageGenerator;
     const bridge = {
       onMessageReceived: vi.fn(),
@@ -113,5 +114,37 @@ describe("OpenClaw plugin adapter", () => {
     });
     expect(Object.keys(manifest)).not.toContain("mcpServers");
     expect(Object.keys(manifest)).not.toContain("skills");
+  });
+
+  it("returns a controlled refusal for a missing or unsupported Base Image", async () => {
+    const toolFactories: Array<(context: unknown) => unknown> = [];
+    const api = {
+      on() {},
+      registerTool(factory: unknown) {
+        toolFactories.push(factory as (context: unknown) => unknown);
+      }
+    } as unknown as OpenClawAdapterApi;
+    const bridge = {
+      startRoundFromCurrentTurn: vi
+        .fn()
+        .mockRejectedValue(new UnsupportedBaseImageError())
+    } as unknown as OpenClawRoundBridge;
+
+    registerOpenClawRoundAdapter(api, bridge, () => ({
+      generate: vi.fn()
+    }));
+    const startTool = toolFactories[0]?.({ sessionKey: "session-1" }) as {
+      execute(toolCallId: string, params: unknown): Promise<unknown>;
+    };
+
+    await expect(startTool.execute("call-1", {})).resolves.toEqual({
+      content: [
+        {
+          type: "text",
+          text: "A Feedback Round requires exactly one PNG, JPEG, or WebP Base Image."
+        }
+      ],
+      details: { status: "refused" }
+    });
   });
 });

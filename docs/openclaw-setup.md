@@ -62,7 +62,11 @@ npm run openclaw:profile -- validate
 `prepare` derives the server and channel only from the private project
 allowlist. It writes the OpenClaw configuration to the named profile outside
 the repository. The private Discord identifiers are not command arguments and
-are not printed.
+are not printed. It atomically replaces every capability-bearing channel,
+tool, plugin, browser, command, message, and Gateway section, so stale values
+from an earlier run cannot survive. It also refuses setup when another local
+TCP listener is less than 20 ports away from this profile's Gateway port; the
+current profile's own port is exempt so preparation remains repeatable.
 
 ## 3. Seed the Discord credential locally
 
@@ -119,10 +123,17 @@ attached. For the POC, the bot then:
 2. captures the first five qualifying non-empty messages;
 3. accepts at most two supported images from each qualifying message and five
    Participant Reference Images for the whole round;
-4. wakes the model only when a start decision or frozen synthesis is needed;
-5. posts the closed marker with the persisted Synthesized Prompt;
-6. performs one image edit; and
-7. posts one Result Image, refusal, or failure outcome.
+4. composes accepted Participant Reference Images into one ordered contact
+   sheet so every image fits alongside the separate Base Image within the
+   provider's input limit;
+5. wakes the model only when a start decision or frozen synthesis is needed;
+6. posts the closed marker with the persisted Synthesized Prompt;
+7. performs one image edit; and
+8. posts one Result Image, refusal, or failure outcome.
+
+A missing Base Image, multiple Base Images, or an unsupported format receives
+a controlled tool refusal; no Round State Capsule or external post intent is
+created for that invalid start.
 
 Do not run the browser-mediated round skill against the same channel while this
 worker is active. The JSON store permits only one active round, but mixing two

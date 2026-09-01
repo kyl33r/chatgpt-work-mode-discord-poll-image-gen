@@ -14,6 +14,24 @@ afterEach(async () => {
 });
 
 describe("JsonRoundArtifactStore", () => {
+  it("accepts only the canonical decodable Base Image in its round capsule", async () => {
+    const directory = await temporaryDirectory();
+    const roundsRoot = join(directory, "rounds");
+    const capsule = join(roundsRoot, "R001");
+    await mkdir(capsule, { recursive: true });
+    const baseImage = join(capsule, "base-image.png");
+    await writeFile(baseImage, await validPng());
+    const artifacts = new JsonRoundArtifactStore(roundsRoot);
+
+    await expect(artifacts.acceptBaseImage("R001", baseImage)).resolves.toBe(
+      await realpath(baseImage)
+    );
+    await writeFile(baseImage, Buffer.from("corrupt"));
+    await expect(artifacts.acceptBaseImage("R001", baseImage)).rejects.toThrow(
+      "Base image must be staged under the durable state directory."
+    );
+  });
+
   it("copies one source Result Image into a distinct target Base Image", async () => {
     const directory = await temporaryDirectory();
     const roundsRoot = join(directory, "rounds");

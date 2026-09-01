@@ -29,7 +29,7 @@ describe("round CLI lifecycle", () => {
     await mkdir(roundCapsule, { recursive: true });
     const store = new JsonRoundStateStore(roundsRoot);
     const requestedBaseImagePath = join(roundCapsule, "base-image.png");
-    await writeFile(requestedBaseImagePath, "test image fixture", "utf8");
+    await writeFile(requestedBaseImagePath, await validPng());
     const baseImagePath = await realpath(requestedBaseImagePath);
 
     expect(

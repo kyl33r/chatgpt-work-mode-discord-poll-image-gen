@@ -4,7 +4,12 @@ import { basename, isAbsolute } from "node:path";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import sharp from "sharp";
 
-import { SUPPORTED_IMAGE_MIME_TYPES } from "../constants.js";
+import {
+  OPENCLAW_CONTEXT_SHEET_CELL_SIZE_PX,
+  OPENCLAW_CONTEXT_SHEET_COLUMNS,
+  OPENCLAW_CONTEXT_SHEET_FILE_NAME,
+  SUPPORTED_IMAGE_MIME_TYPES
+} from "../constants.js";
 import type {
   ImageGenerationInput,
   ImageGenerationResult,
@@ -24,9 +29,9 @@ export class OpenClawImageGenerator implements ImageGenerator {
   public constructor(private readonly dependencies: OpenClawImageGeneratorDependencies) {}
 
   public async generate(input: ImageGenerationInput): Promise<ImageGenerationResult> {
-    const inputImages = [];
-    for (const path of [input.baseImagePath, ...input.contextImagePaths]) {
-      inputImages.push(await loadImage(path));
+    const inputImages = [await loadImage(input.baseImagePath)];
+    if (input.contextImagePaths.length > 0) {
+      inputImages.push(await createParticipantContextSheet(input.contextImagePaths));
     }
     const result = await this.dependencies.generate({
       cfg: this.dependencies.config,
@@ -56,6 +61,51 @@ export class OpenClawImageGenerator implements ImageGenerator {
       mediaType: result.images[0].mimeType
     };
   }
+}
+
+async function createParticipantContextSheet(paths: readonly string[]) {
+  const images = await Promise.all(paths.map((path) => loadImage(path)));
+  const columns = Math.min(OPENCLAW_CONTEXT_SHEET_COLUMNS, images.length);
+  const rows = Math.ceil(images.length / columns);
+  const tiles = await Promise.all(
+    images.map(async (image) =>
+      sharp(image.buffer)
+        .resize(
+          OPENCLAW_CONTEXT_SHEET_CELL_SIZE_PX,
+          OPENCLAW_CONTEXT_SHEET_CELL_SIZE_PX,
+          {
+            fit: "contain",
+            background: { r: 255, g: 255, b: 255, alpha: 1 }
+          }
+        )
+        .png()
+        .toBuffer()
+    )
+  );
+  const buffer = await sharp({
+    create: {
+      width: columns * OPENCLAW_CONTEXT_SHEET_CELL_SIZE_PX,
+      height: rows * OPENCLAW_CONTEXT_SHEET_CELL_SIZE_PX,
+      channels: 4,
+      background: { r: 255, g: 255, b: 255, alpha: 1 }
+    }
+  })
+    .composite(
+      tiles.map((tile, index) => ({
+        input: tile,
+        left:
+          (index % columns) * OPENCLAW_CONTEXT_SHEET_CELL_SIZE_PX,
+        top:
+          Math.floor(index / columns) * OPENCLAW_CONTEXT_SHEET_CELL_SIZE_PX
+      }))
+    )
+    .png()
+    .toBuffer();
+  return {
+    buffer,
+    mimeType: "image/png" as const,
+    fileName: OPENCLAW_CONTEXT_SHEET_FILE_NAME
+  };
 }
 
 async function loadImage(path: string) {

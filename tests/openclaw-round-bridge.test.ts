@@ -53,6 +53,45 @@ describe("OpenClawRoundBridge", () => {
     ).resolves.toEqual({ handled: true });
   });
 
+  it("claims a Discord dispatch outside the configured conversation", async () => {
+    const coordinator = coordinatorPort({
+      isConfiguredConversation: vi.fn().mockResolvedValue(false)
+    });
+    const bridge = new OpenClawRoundBridge(coordinator);
+
+    await expect(
+      bridge.onBeforeDispatch(
+        { messageId: "message-1", content: "untrusted body", sessionKey: "session-1" },
+        {
+          channelId: "discord",
+          conversationId: "different-channel",
+          messageId: "message-1",
+          sessionKey: "session-1"
+        }
+      )
+    ).resolves.toEqual({ handled: true });
+  });
+
+  it("persists active-round attention when inbound attachment staging is ambiguous", async () => {
+    const coordinator = coordinatorPort();
+    const bridge = new OpenClawRoundBridge(coordinator);
+    const { media: _stagedMedia, ...unstagedEvent } = messageEvent();
+
+    await bridge.onMessageReceived(
+      {
+        ...unstagedEvent,
+        mediaStagingPending: true,
+        originalMedia: [{ contentType: "image/png", kind: "image" }]
+      },
+      messageContext()
+    );
+
+    expect(coordinator.handleInboundAmbiguity).toHaveBeenCalledWith(
+      "discord",
+      "channel-1"
+    );
+  });
+
   it("delivers a model-requested round start once and confirms the exact Discord receipt", async () => {
     const coordinator = coordinatorPort({
       handleMessage: vi.fn().mockResolvedValue({ type: "dispatch-to-agent" }),
@@ -113,6 +152,100 @@ describe("OpenClawRoundBridge", () => {
       bridge.startRoundFromCurrentTurn({ sessionKey: "session-1", delivery: { send } })
     ).rejects.toThrow("This inbound turn has already started a Feedback Round.");
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks an unconfirmed round-start delivery for attention without retrying", async () => {
+    vi.useFakeTimers();
+    try {
+      const coordinator = coordinatorPort({
+        handleMessage: vi.fn().mockResolvedValue({ type: "dispatch-to-agent" }),
+        executeAction: vi.fn().mockResolvedValue({
+          type: "deliver-round-start",
+          operationId: "operation-1",
+          roundId: "ROUND1",
+          mediaPath: "/state/ROUND1/base-image.png",
+          caption: "===== POLL START: ROUND1 ====="
+        })
+      });
+      const bridge = new OpenClawRoundBridge(coordinator);
+      const send = vi.fn().mockResolvedValue(undefined);
+
+      await bridge.onMessageReceived(messageEvent(), messageContext());
+      await bridge.onBeforeDispatch(
+        { messageId: "message-1", content: "Start", sessionKey: "session-1" },
+        {
+          channelId: "discord",
+          conversationId: "channel-1",
+          messageId: "message-1",
+          sessionKey: "session-1"
+        }
+      );
+      await bridge.startRoundFromCurrentTurn({
+        sessionKey: "session-1",
+        delivery: { send }
+      });
+
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(coordinator.markAttention).toHaveBeenCalledWith({
+        roundId: "ROUND1",
+        source: expect.objectContaining({ messageId: "message-1" }),
+        cause: "delivery-confirmation-ambiguous"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a delivery receipt whose actual target contradicts the bound channel", async () => {
+    const coordinator = coordinatorPort({
+      handleMessage: vi.fn().mockResolvedValue({ type: "dispatch-to-agent" }),
+      executeAction: vi.fn().mockResolvedValue({
+        type: "deliver-round-start",
+        operationId: "operation-1",
+        roundId: "ROUND1",
+        mediaPath: "/state/ROUND1/base-image.png",
+        caption: "===== POLL START: ROUND1 ====="
+      })
+    });
+    const bridge = new OpenClawRoundBridge(coordinator);
+    await bridge.onMessageReceived(messageEvent(), messageContext());
+    await bridge.onBeforeDispatch(
+      { messageId: "message-1", content: "Start", sessionKey: "session-1" },
+      {
+        channelId: "discord",
+        conversationId: "channel-1",
+        messageId: "message-1",
+        sessionKey: "session-1"
+      }
+    );
+    await bridge.startRoundFromCurrentTurn({
+      sessionKey: "session-1",
+      delivery: { send: vi.fn().mockResolvedValue(undefined) }
+    });
+
+    await bridge.onMessageSent(
+      {
+        to: "different-channel",
+        content: "===== POLL START: ROUND1 =====",
+        success: true,
+        messageId: "1751862888969322496",
+        sessionKey: "session-1"
+      },
+      {
+        channelId: "discord",
+        conversationId: "channel-1",
+        sessionKey: "session-1"
+      }
+    );
+
+    expect(coordinator.confirmRoundStart).not.toHaveBeenCalled();
+    expect(coordinator.markAttention).toHaveBeenCalledWith({
+      roundId: "ROUND1",
+      source: expect.objectContaining({ messageId: "message-1" }),
+      cause: "delivery-confirmation-ambiguous"
+    });
   });
 
   it("completes synthesis, generation, and publication after exact delivery receipts", async () => {
@@ -225,6 +358,7 @@ function coordinatorPort(
     executeAction: vi.fn(),
     handleMessage: vi.fn().mockResolvedValue({ type: "dispatch-to-agent" }),
     isConfiguredConversation: vi.fn().mockResolvedValue(true),
+    handleInboundAmbiguity: vi.fn().mockResolvedValue(undefined),
     confirmRoundStart: vi.fn(),
     markAttention: vi.fn(),
     prepareSynthesis: vi.fn(),

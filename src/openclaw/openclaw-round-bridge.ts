@@ -27,6 +27,10 @@ import {
 export interface OpenClawRoundCoordinatorPort {
   executeAction(request: GovernedActionRequest): Promise<DeliverRoundStartDirective>;
   handleMessage(source: InboundMessage): Promise<InboundRoundDirective>;
+  handleInboundAmbiguity(
+    provider: string | undefined,
+    conversationId: string | undefined
+  ): Promise<void>;
   isConfiguredConversation(
     provider: string | undefined,
     conversationId: string | undefined
@@ -142,7 +146,7 @@ export class OpenClawRoundBridge {
       context.conversationId
     );
     if (!configured) {
-      return undefined;
+      return context.channelId === "discord" ? { handled: true } : undefined;
     }
     const correlation = inboundCorrelation(event.messageId, context.messageId, context.sessionKey);
     if (!correlation || event.sessionKey !== context.sessionKey) {
@@ -268,6 +272,17 @@ export class OpenClawRoundBridge {
     ) {
       return;
     }
+    if (event.to !== pending.source.destination.channelId) {
+      this.pendingDeliveries.delete(context.sessionKey);
+      if (pending.timeout) {
+        clearTimeout(pending.timeout);
+      }
+      await this.failPendingDelivery(
+        pending,
+        "delivery-confirmation-ambiguous"
+      );
+      return;
+    }
     this.pendingDeliveries.delete(context.sessionKey);
     if (pending.timeout) {
       clearTimeout(pending.timeout);
@@ -325,11 +340,11 @@ export class OpenClawRoundBridge {
         tracked.resolve = resolvePromise;
         tracked.reject = reject;
       });
-      tracked.timeout = setTimeout(() => {
-        void this.timeoutPendingDelivery(sessionKey, tracked);
-      }, OPENCLAW_DELIVERY_CONFIRMATION_TIMEOUT_MS);
-      tracked.timeout.unref?.();
     }
+    tracked.timeout = setTimeout(() => {
+      void this.timeoutPendingDelivery(sessionKey, tracked);
+    }, OPENCLAW_DELIVERY_CONFIRMATION_TIMEOUT_MS);
+    tracked.timeout.unref?.();
     this.pendingDeliveries.set(sessionKey, tracked);
     try {
       await delivery.send({
@@ -368,14 +383,17 @@ export class OpenClawRoundBridge {
     pending: PendingDelivery,
     cause: MarkRoundAttentionInput["cause"]
   ): Promise<void> {
-    await this.coordinator.markAttention({
-      roundId: pending.directive.roundId,
-      source: pending.source,
-      cause
-    });
-    pending.reject?.(
-      new Error("Discord delivery confirmation is incomplete or ambiguous.")
-    );
+    try {
+      await this.coordinator.markAttention({
+        roundId: pending.directive.roundId,
+        source: pending.source,
+        cause
+      });
+    } finally {
+      pending.reject?.(
+        new Error("Discord delivery confirmation is incomplete or ambiguous.")
+      );
+    }
   }
 
   private async evaluateInbound(
@@ -390,6 +408,9 @@ export class OpenClawRoundBridge {
         source
       };
     } catch {
+      await this.coordinator
+        .handleInboundAmbiguity(context.channelId, context.conversationId)
+        .catch(() => undefined);
       return { type: "ambiguous" };
     }
   }

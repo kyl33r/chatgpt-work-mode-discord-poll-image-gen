@@ -1,57 +1,30 @@
 import { Type } from "typebox";
-import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
+import type {
+  OpenClawPluginApi,
+  OpenClawPluginToolContext
+} from "openclaw/plugin-sdk/plugin-entry";
 
 import {
   OPENCLAW_COMPLETE_ROUND_TOOL_DESCRIPTION,
+  OPENCLAW_COMPLETE_ROUND_TOOL_LABEL,
   OPENCLAW_COMPLETE_ROUND_TOOL_NAME,
   OPENCLAW_COMPLETE_ROUND_TOOL_RESULT,
   OPENCLAW_PREPARE_SYNTHESIS_TOOL_DESCRIPTION,
+  OPENCLAW_PREPARE_SYNTHESIS_TOOL_LABEL,
   OPENCLAW_PREPARE_SYNTHESIS_TOOL_NAME,
   OPENCLAW_PREPARE_SYNTHESIS_TOOL_RESULT,
   OPENCLAW_START_ROUND_TOOL_DESCRIPTION,
+  OPENCLAW_START_ROUND_TOOL_LABEL,
   OPENCLAW_START_ROUND_TOOL_NAME,
+  OPENCLAW_START_ROUND_REFUSAL_RESULT,
   OPENCLAW_START_ROUND_TOOL_RESULT,
   SYNTHESIZED_PROMPT_MAX_CHARACTERS
 } from "../constants.js";
 import type { ImageGenerator } from "../generation/image-generator.js";
-import type {
-  OpenClawBeforeDispatchContext,
-  OpenClawBeforeDispatchEvent,
-  OpenClawInboundContext,
-  OpenClawMessageSentContext,
-  OpenClawMessageSentEvent,
-  OpenClawRoundBridge
-} from "./openclaw-round-bridge.js";
-import type { OpenClawMessageEvent } from "../messaging/openclaw-message-normalizer.js";
+import { UnsupportedBaseImageError } from "../messaging/feedback-round-coordinator.js";
+import type { OpenClawRoundBridge } from "./openclaw-round-bridge.js";
 
-type AdapterHookName = "message_received" | "before_dispatch" | "message_sent";
-
-interface OpenClawToolResult {
-  content: Array<{ type: "text"; text: string }>;
-  details: unknown;
-}
-
-interface OpenClawAgentTool {
-  name: string;
-  description: string;
-  parameters: ReturnType<typeof Type.Object>;
-  execute(
-    toolCallId: string,
-    params: unknown,
-    signal?: AbortSignal
-  ): Promise<OpenClawToolResult>;
-}
-
-export interface OpenClawAdapterApi {
-  on(
-    name: AdapterHookName,
-    handler: (event: never, context: never) => Promise<unknown> | unknown
-  ): void;
-  registerTool(
-    factory: (context: OpenClawPluginToolContext) => OpenClawAgentTool,
-    options?: { optional?: boolean }
-  ): void;
-}
+export type OpenClawAdapterApi = Pick<OpenClawPluginApi, "on" | "registerTool">;
 
 export type OpenClawImageGeneratorFactory = (
   context: OpenClawPluginToolContext
@@ -64,34 +37,98 @@ export function registerOpenClawRoundAdapter(
 ): void {
   api.on("message_received", (event, context) =>
     bridge.onMessageReceived(
-      event as OpenClawMessageEvent,
-      context as OpenClawInboundContext
+      {
+        from: event.from,
+        content: event.content,
+        ...(event.timestamp === undefined ? {} : { timestamp: event.timestamp }),
+        ...(event.messageId === undefined ? {} : { messageId: event.messageId }),
+        ...(event.senderId === undefined ? {} : { senderId: event.senderId }),
+        ...(event.media === undefined
+          ? {}
+          : {
+              media: event.media.map(normalizeMediaFact)
+            }),
+        ...(event.originalMedia === undefined
+          ? {}
+          : {
+              originalMedia: event.originalMedia.map(normalizeMediaFact)
+            }),
+        ...(event.mediaStagingPending === undefined
+          ? {}
+          : { mediaStagingPending: event.mediaStagingPending }),
+        ...(event.metadata === undefined ? {} : { metadata: event.metadata })
+      },
+      {
+        channelId: context.channelId,
+        ...(context.conversationId === undefined
+          ? {}
+          : { conversationId: context.conversationId }),
+        ...(context.messageId === undefined ? {} : { messageId: context.messageId }),
+        ...(context.senderId === undefined ? {} : { senderId: context.senderId }),
+        ...(context.sessionKey === undefined ? {} : { sessionKey: context.sessionKey })
+      }
     )
   );
   api.on("before_dispatch", (event, context) =>
     bridge.onBeforeDispatch(
-      event as OpenClawBeforeDispatchEvent,
-      context as OpenClawBeforeDispatchContext
+      {
+        content: event.content,
+        ...(event.messageId === undefined ? {} : { messageId: event.messageId }),
+        ...(event.sessionKey === undefined ? {} : { sessionKey: event.sessionKey })
+      },
+      {
+        ...(context.messageId === undefined ? {} : { messageId: context.messageId }),
+        ...(context.channelId === undefined ? {} : { channelId: context.channelId }),
+        ...(context.conversationId === undefined
+          ? {}
+          : { conversationId: context.conversationId }),
+        ...(context.sessionKey === undefined ? {} : { sessionKey: context.sessionKey })
+      }
     )
   );
   api.on("message_sent", (event, context) =>
     bridge.onMessageSent(
-      event as OpenClawMessageSentEvent,
-      context as OpenClawMessageSentContext
+      {
+        to: event.to,
+        content: event.content,
+        success: event.success,
+        ...(event.messageId === undefined ? {} : { messageId: event.messageId }),
+        ...(event.sessionKey === undefined ? {} : { sessionKey: event.sessionKey })
+      },
+      {
+        channelId: context.channelId,
+        ...(context.conversationId === undefined
+          ? {}
+          : { conversationId: context.conversationId }),
+        ...(context.sessionKey === undefined ? {} : { sessionKey: context.sessionKey })
+      }
     )
   );
   api.registerTool(
     (context) => ({
       name: OPENCLAW_START_ROUND_TOOL_NAME,
+      label: OPENCLAW_START_ROUND_TOOL_LABEL,
       description: OPENCLAW_START_ROUND_TOOL_DESCRIPTION,
       parameters: Type.Object({}, { additionalProperties: false }),
       async execute(_toolCallId, params) {
         requireEmptyParameters(params);
-        const result = await bridge.startRoundFromCurrentTurn(context);
-        return {
-          content: [{ type: "text", text: OPENCLAW_START_ROUND_TOOL_RESULT }],
-          details: result
-        };
+        try {
+          const result = await bridge.startRoundFromCurrentTurn(context);
+          return {
+            content: [{ type: "text", text: OPENCLAW_START_ROUND_TOOL_RESULT }],
+            details: result
+          };
+        } catch (error) {
+          if (error instanceof UnsupportedBaseImageError) {
+            return {
+              content: [
+                { type: "text", text: OPENCLAW_START_ROUND_REFUSAL_RESULT }
+              ],
+              details: { status: "refused" as const }
+            };
+          }
+          throw error;
+        }
       }
     }),
     { optional: true }
@@ -99,6 +136,7 @@ export function registerOpenClawRoundAdapter(
   api.registerTool(
     (context) => ({
       name: OPENCLAW_PREPARE_SYNTHESIS_TOOL_NAME,
+      label: OPENCLAW_PREPARE_SYNTHESIS_TOOL_LABEL,
       description: OPENCLAW_PREPARE_SYNTHESIS_TOOL_DESCRIPTION,
       parameters: Type.Object({}, { additionalProperties: false }),
       async execute(_toolCallId, params) {
@@ -125,6 +163,7 @@ export function registerOpenClawRoundAdapter(
   api.registerTool(
     (context) => ({
       name: OPENCLAW_COMPLETE_ROUND_TOOL_NAME,
+      label: OPENCLAW_COMPLETE_ROUND_TOOL_LABEL,
       description: OPENCLAW_COMPLETE_ROUND_TOOL_DESCRIPTION,
       parameters: Type.Object(
         {
@@ -153,6 +192,20 @@ export function registerOpenClawRoundAdapter(
     }),
     { optional: true }
   );
+}
+
+function normalizeMediaFact(media: {
+  path?: string | undefined;
+  contentType?: string | undefined;
+  kind?: string | undefined;
+  messageId?: string | undefined;
+}) {
+  return {
+    ...(media.path === undefined ? {} : { path: media.path }),
+    ...(media.contentType === undefined ? {} : { contentType: media.contentType }),
+    ...(media.kind === undefined ? {} : { kind: media.kind }),
+    ...(media.messageId === undefined ? {} : { messageId: media.messageId })
+  };
 }
 
 function requireEmptyParameters(value: unknown): void {
