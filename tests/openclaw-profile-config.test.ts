@@ -90,26 +90,38 @@ describe("OpenClaw isolated profile config", () => {
       "tools"
     ]);
     expect(patchWithoutPrivateValues()).toMatchObject({
+      accessGroups: null,
       acp: null,
       approvals: null,
+      attachments: null,
+      auth: null,
       bindings: null,
       broadcast: null,
       cloudWorkers: null,
       cron: null,
       desktop: null,
+      diagnostics: null,
       discovery: null,
       env: null,
       hooks: null,
+      logging: null,
       mcp: null,
       memory: null,
       models: null,
       nodeHost: null,
       proxy: null,
+      secrets: null,
+      security: null,
+      session: null,
       skills: null,
       surfaces: null,
       talk: null,
+      telemetry: null,
       transcripts: null,
-      tts: null
+      tts: null,
+      ui: null,
+      update: null,
+      wizard: null
     });
   });
 });

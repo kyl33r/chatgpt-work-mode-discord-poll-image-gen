@@ -18,26 +18,38 @@ export const OPENCLAW_GATEWAY_PORT = 21_789;
 export const OPENCLAW_GATEWAY_MINIMUM_PORT_SEPARATION = 20;
 export const OPENCLAW_LSOF_PATH = "/usr/sbin/lsof";
 export const OPENCLAW_PROFILE_CLEARED_ROOTS = [
+  "accessGroups",
   "acp",
   "approvals",
+  "attachments",
+  "auth",
   "bindings",
   "broadcast",
   "cloudWorkers",
   "cron",
   "desktop",
+  "diagnostics",
   "discovery",
   "env",
   "hooks",
+  "logging",
   "mcp",
   "memory",
   "models",
   "nodeHost",
   "proxy",
+  "secrets",
+  "security",
+  "session",
   "skills",
   "surfaces",
   "talk",
+  "telemetry",
   "transcripts",
-  "tts"
+  "tts",
+  "ui",
+  "update",
+  "wizard"
 ] as const;
 export const OPENCLAW_GATEWAY_TOKEN_ENV = "OPENCLAW_GATEWAY_TOKEN";
 export const OPENCLAW_DISCORD_TOKEN_ENV = "DISCORD_BOT_TOKEN";
