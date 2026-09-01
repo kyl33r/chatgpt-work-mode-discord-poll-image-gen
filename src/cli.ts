@@ -43,11 +43,17 @@ import {
   type RoundStateStore
 } from "./round/round-state-store.js";
 import { FileWorkflowLock, type WorkflowLock } from "./workflow-lock.js";
+import {
+  JsonInboundAttachmentStore,
+  type InboundAttachmentStore
+} from "./messaging/inbound-attachment-store.js";
 
 export interface CommandDependencies {
   allowlist: DiscordChannelAllowlistStore;
   artifacts?: RoundArtifactStore;
+  inboundAttachments?: InboundAttachmentStore;
   workflowLock: WorkflowLock;
+  authorizedChannelUrl?: string;
 }
 
 export async function executeCommand(
@@ -58,12 +64,19 @@ export async function executeCommand(
 ): Promise<unknown> {
   return dependencies.workflowLock.runExclusive(async () => {
     const allowedChannelUrl = await resolveDiscordChannel(dependencies.allowlist);
+    if (
+      dependencies.authorizedChannelUrl !== undefined &&
+      dependencies.authorizedChannelUrl !== allowedChannelUrl
+    ) {
+      throw new Error("Message source does not match the configured Discord allowlist.");
+    }
     return executeLockedCommand(
       command,
       payload,
       store,
       allowedChannelUrl,
-      dependencies.artifacts
+      dependencies.artifacts,
+      dependencies.inboundAttachments
     );
   });
 }
@@ -73,7 +86,8 @@ async function executeLockedCommand(
   payload: unknown,
   store: RoundStateStore,
   allowedChannelUrl: string,
-  artifacts: RoundArtifactStore | undefined
+  artifacts: RoundArtifactStore | undefined,
+  inboundAttachments: InboundAttachmentStore | undefined
 ): Promise<unknown> {
   await assertAllowedChannel(command, payload, store, allowedChannelUrl);
   if (command === "prepare-base-submission") {
@@ -81,6 +95,15 @@ async function executeLockedCommand(
       payload,
       store,
       requireArtifactStore(artifacts),
+      allowedChannelUrl
+    );
+  }
+  if (command === "prepare-inbound-base-submission") {
+    return prepareInboundBaseSubmission(
+      payload,
+      store,
+      requireArtifactStore(artifacts),
+      requireInboundAttachmentStore(inboundAttachments),
       allowedChannelUrl
     );
   }
@@ -103,7 +126,7 @@ async function executeLockedCommand(
     }));
   }
   if (command === "collect-messages") {
-    return collectRoundMessages(payload, store, artifacts);
+    return collectRoundMessages(payload, store, artifacts, inboundAttachments);
   }
   if (command === "prepare-prompt-synthesis") {
     return preparePromptSynthesis(payload, store);
@@ -162,7 +185,11 @@ async function assertAllowedChannel(
   allowedChannelUrl: string
 ): Promise<void> {
   const record = requireRecord(payload, "payload");
-  if (command === "prepare-base-submission" || command === "prepare-continuation") {
+  if (
+    command === "prepare-base-submission" ||
+    command === "prepare-inbound-base-submission" ||
+    command === "prepare-continuation"
+  ) {
     if ("channelUrl" in record) {
       throw new Error("The round channel is derived from the configured Discord allowlist.");
     }
@@ -172,6 +199,72 @@ async function assertAllowedChannel(
   if (round && round.channelUrl !== allowedChannelUrl) {
     throw new Error("Round channel does not match the configured Discord allowlist.");
   }
+}
+
+async function prepareInboundBaseSubmission(
+  payload: unknown,
+  store: RoundStateStore,
+  artifacts: RoundArtifactStore,
+  inboundAttachments: InboundAttachmentStore,
+  allowedChannelUrl: string
+): Promise<unknown> {
+  const record = requireRecord(payload, "payload");
+  const roundId = requireString(record.roundId, "payload.roundId");
+  if (await store.get(roundId)) {
+    throw new Error(`Round already exists: ${roundId}`);
+  }
+  const activeRound = (await store.list()).find(
+    (round) =>
+      round.phase !== "completed" &&
+      round.phase !== "stopped" &&
+      round.phase !== "needs-attention"
+  );
+  if (activeRound) {
+    throw new Error(`An active round already exists: ${activeRound.id}`);
+  }
+  const importedBaseImagePath = await inboundAttachments.importBaseImage(
+    roundId,
+    requireString(record.stagedPath, "payload.stagedPath"),
+    requireString(record.mediaType, "payload.mediaType")
+  );
+  const submitting = applyRoundEvent(
+    createRound({
+      id: roundId,
+      baseImagePath: await artifacts.acceptBaseImage(roundId, importedBaseImagePath),
+      channelUrl: allowedChannelUrl,
+      messageLimit: FEEDBACK_MESSAGE_LIMIT
+    }),
+    { type: "base-submission-started" }
+  );
+  try {
+    await store.save(submitting);
+  } catch (error) {
+    const persisted = await store.get(roundId).catch(() => {
+      throw new Error(
+        "Inbound Base Image persistence is ambiguous; the imported image was retained."
+      );
+    });
+    if (!persisted) {
+      await artifacts.discardUnpersistedBase(roundId, importedBaseImagePath);
+    }
+    throw error;
+  }
+  return {
+    action: "post-base-image",
+    operationId: createOperationId(
+      roundId,
+      "submitting-base",
+      OPERATION_TURN_NUMBER,
+      submitting.channelUrl
+    ),
+    roundId,
+    baseImagePath: submitting.baseImagePath,
+    channelUrl: submitting.channelUrl,
+    caption: [
+      POLL_START_MARKER_TEMPLATE.replace("<id>", roundId),
+      messageCollectionInstructions()
+    ].join("\n")
+  };
 }
 
 async function prepareContinuation(
@@ -294,7 +387,8 @@ async function prepareBaseSubmission(
 async function collectRoundMessages(
   payload: unknown,
   store: RoundStateStore,
-  artifacts: RoundArtifactStore | undefined
+  artifacts: RoundArtifactStore | undefined,
+  inboundAttachments: InboundAttachmentStore | undefined
 ): Promise<unknown> {
   const input = parseCollectMessagesPayload(payload);
   const round = await requireRound(store, input.roundId);
@@ -332,19 +426,38 @@ async function collectRoundMessages(
     const existingUrls = new Set(round.capturedMessages.map((message) => message.messageUrl));
     for (const [messageIndex, message] of collection.captured.entries()) {
       for (const image of message.contextImages) {
-        image.imagePath = existingUrls.has(message.messageUrl)
-          ? await requireArtifactStore(artifacts).requireFeedbackImage(
+        if (existingUrls.has(message.messageUrl)) {
+          image.imagePath = await requireArtifactStore(artifacts).requireFeedbackImage(
+            round.id,
+            messageIndex + 1,
+            image.attachmentIndex,
+            image.imagePath
+          );
+          continue;
+        }
+        const observedAttachment = input.messages
+          .find((observation) => observation.messageUrl === message.messageUrl)
+          ?.attachments.find(
+            (attachment) => attachment.attachmentIndex === image.attachmentIndex
+          );
+        if (!observedAttachment) {
+          throw new Error("Selected participant image staging is incomplete.");
+        }
+        const candidatePath = inboundAttachments
+          ? await inboundAttachments.importFeedbackImage(
               round.id,
               messageIndex + 1,
               image.attachmentIndex,
-              image.imagePath
+              observedAttachment.imagePath,
+              observedAttachment.mediaType
             )
-          : await requireArtifactStore(artifacts).acceptFeedbackImage(
-              round.id,
-              messageIndex + 1,
-              image.attachmentIndex,
-              image.imagePath
-            );
+          : image.imagePath;
+        image.imagePath = await requireArtifactStore(artifacts).acceptFeedbackImage(
+          round.id,
+          messageIndex + 1,
+          image.attachmentIndex,
+          candidatePath
+        );
       }
     }
   } catch {
@@ -634,6 +747,15 @@ function requireArtifactStore(artifacts: RoundArtifactStore | undefined): RoundA
   return artifacts;
 }
 
+function requireInboundAttachmentStore(
+  attachments: InboundAttachmentStore | undefined
+): InboundAttachmentStore {
+  if (!attachments) {
+    throw new Error("An InboundAttachmentStore is required for messaging attachments.");
+  }
+  return attachments;
+}
+
 function messageCollectionInstructions(): string {
   return MESSAGE_COLLECTION_INSTRUCTIONS_TEMPLATE
     .replace("<messageLimit>", String(FEEDBACK_MESSAGE_LIMIT))
@@ -766,6 +888,7 @@ async function main(): Promise<void> {
     {
       allowlist: new JsonDiscordChannelAllowlistStore(DISCORD_CHANNEL_ALLOWLIST_PATH),
       artifacts: new JsonRoundArtifactStore(ROUND_STATE_ROOT),
+      inboundAttachments: new JsonInboundAttachmentStore(ROUND_STATE_ROOT),
       workflowLock: new FileWorkflowLock(WORKFLOW_LOCK_PATH)
     }
   );

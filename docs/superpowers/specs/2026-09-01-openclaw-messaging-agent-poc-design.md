@@ -2,7 +2,7 @@
 
 Date: 2026-09-01
 
-Status: Awaiting written-spec review
+Status: Approved for implementation
 
 ## Purpose
 
@@ -63,12 +63,12 @@ RoundStateStore  RoundArtifactStore  ImageGenerator
                          controlled Discord delivery
 ```
 
-OpenClaw supplies two adapters:
+OpenClaw supplies two logical adapter responsibilities:
 
-1. `OpenClawMessagingAdapter` converts OpenClaw inbound message and media facts
+1. The OpenClaw message normalizer and round bridge convert inbound message and media facts
    into the repository's normalized messaging interface and delivers controlled
    outbound outcomes.
-2. `OpenClawAgentAdapter` exposes the bounded tools to one configured LLM and
+2. The OpenClaw plugin adapter exposes three bounded tools to one configured LLM and
    converts tool calls into coordinator commands.
 
 `FeedbackRoundCoordinator` is the deep module. It hides admission, lifecycle,
@@ -133,7 +133,9 @@ interface AgentRuntime {
 }
 ```
 
-Only normalized, bounded facts enter the agent prompt. Raw state records,
+Only normalized, bounded facts enter the agent prompt. The available tools are
+`start_image_feedback_round`, `prepare_image_feedback_synthesis`, and
+`complete_image_feedback_round`. Raw state records,
 credentials, private destination identifiers, and filesystem paths do not.
 Every returned action is untrusted until `executeAction` validates it.
 
@@ -220,7 +222,7 @@ OpenClaw session history is advisory conversation context. The coordinator
 reconstructs every workflow decision from `RoundStateStore` and
 `RoundArtifactStore` under the existing workflow lock.
 
-On startup the plugin calls `reconcile()`:
+The target restart model is a future `reconcile()` pass:
 
 - a collecting round resumes collection;
 - a frozen round with no persisted synthesis result requests one agent turn;
@@ -231,7 +233,10 @@ On startup the plugin calls `reconcile()`:
   Attention; and
 - a confirmed completed round performs no external action.
 
-No restart path infers success from missing information.
+No restart path may infer success from missing information. The initial POC
+durably resumes ordinary collection on the next inbound event, but it does not
+yet autonomously re-dispatch an interrupted synthesis turn. That limitation is
+kept explicit in the setup runbook and remains part of the adoption gate.
 
 ## Security model
 

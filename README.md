@@ -1,14 +1,22 @@
-# ChatGPT Work Mode Discord Poll Image Generation
+# Agent-driven Discord Poll Image Generation
 
-A Work-native proof of concept for collaborative image editing in Discord.
+A proof of concept for collaborative image editing in Discord, with a
+deterministic local workflow behind replaceable messaging and agent adapters.
 
-The owner starts a round from ChatGPT with a Base Image attached here or linked from one exact Discord message. ChatGPT Work posts it to the allowlisted channel, captures the first configured number of ordinary non-empty text messages plus bounded optional participant images after that boundary, synthesizes and publicly records one final prompt, attempts one edit with `$imagegen`, and returns one controlled success, refusal, or failure outcome to Discord.
+The original adapter lets an owner start a round from ChatGPT Work. The
+experimental OpenClaw adapter instead runs a dedicated local Discord bot, so a
+Participant can start the same bounded workflow directly in one allowlisted
+channel without keeping a browser task open.
 
-The POC deliberately uses no Discord bot, Discord token, incoming webhook, OpenAI API key, or second Playwright-controlled ChatGPT browser.
+Both adapters reuse the same isolated JSON Round State Capsules, image
+validation, fixed limits, prompt validation, and intent-before-effect state
+machine. They must not operate on the same channel at the same time.
 
 ## Prerequisites
 
-The validated reference environment is ChatGPT Work running in the ChatGPT desktop app. The local desktop host is required for this implementation because the agent must control an authenticated browser session while reading this repository, its project skills, and its private worktree-local state.
+The supervised browser adapter's validated reference environment is ChatGPT
+Work running in the ChatGPT desktop app. That adapter requires an agent host
+with direct control of an authenticated browser session.
 
 Another agent host—such as Claude Cowork, a Gemini environment, or a future equivalent—can support the same workflow only if it provides all of these capabilities:
 
@@ -21,6 +29,11 @@ Another agent host—such as Claude Cowork, a Gemini environment, or a future eq
 - confirmation boundaries and fail-closed handling for uncertain posts, uploads, downloads, or generation attempts.
 
 Provider equivalence is capability-based, not a declaration that every Claude, Gemini, or other product currently implements these interfaces. A new host requires an adapter and a supervised compatibility test before it is treated as supported. A normal browser that the agent cannot inspect and operate is insufficient.
+
+The OpenClaw adapter has different prerequisites: a local Discord bot, an
+isolated OpenClaw managed service, a supported Node runtime, and locally entered
+provider authentication. It does not use browser automation. See
+[OpenClaw Discord worker setup](docs/openclaw-setup.md).
 
 ## Skills
 
@@ -40,6 +53,10 @@ skills/
 Repo-discovery symlinks under `.agents/skills/` point to those folders. Shared TypeScript code owns state transitions, feedback normalization, poll mapping, JSON persistence, and duplicate prevention.
 
 Skills are supervised workflows, not background listeners. `$round-start` keeps its ChatGPT task active and scans at the configured interval until collection freezes or the round stops; ending that task pauses polling until the owner resumes it. A separately approved background service is required for unattended collection.
+
+The OpenClaw branch supplies that experimental background service. OpenClaw is
+an adapter and runtime only; the repository remains the owner of admission,
+state, limits, generation intent, and publication intent.
 
 ## First POC
 
@@ -69,6 +86,8 @@ See [Discord setup](docs/discord-setup.md) before running the supervised browser
 
 - [Domain language](CONTEXT.md)
 - [Discord setup](docs/discord-setup.md)
+- [OpenClaw Discord worker setup](docs/openclaw-setup.md)
+- [OpenClaw messaging-agent design](docs/superpowers/specs/2026-09-01-openclaw-messaging-agent-poc-design.md)
 - [Feasibility research](docs/research/2026-08-24-discord-work-skills-feasibility.md)
 - [Current first POC design](docs/superpowers/specs/2026-08-24-chat-triggered-five-message-round-design.md)
 - [Superseded native-poll design](docs/superpowers/specs/2026-08-24-discord-work-skill-poc-design.md)
