@@ -1,0 +1,33 @@
+{
+  "id": "image-feedback-round",
+  "name": "Image Feedback Round",
+  "description": "Runs the bounded image-feedback workflow in one Discord channel.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "enabledByDefault": false,
+  "contracts": {
+    "tools": [
+      "start_image_feedback_round",
+      "prepare_image_feedback_synthesis",
+      "complete_image_feedback_round"
+    ]
+  },
+  "toolMetadata": {
+    "start_image_feedback_round": {
+      "optional": true
+    },
+    "prepare_image_feedback_synthesis": {
+      "optional": true
+    },
+    "complete_image_feedback_round": {
+      "optional": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -47,7 +47,7 @@ describe("executeCommand", () => {
     const roundCapsule = join(roundsRoot, "RSTART");
     await mkdir(roundCapsule, { recursive: true });
     const baseImagePath = join(roundCapsule, "base-image.png");
-    await writeFile(baseImagePath, "image", "utf8");
+    await writeFile(baseImagePath, await validPng());
     const store = new JsonRoundStateStore(roundsRoot);
     await store.save({
       ...createRound({
